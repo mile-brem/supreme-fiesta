@@ -1,0 +1,239 @@
+# Unintegrated
+
+Here, I present the unintegrated object, and how it appears in the UMAP space.
+
+## Basics
+
+```{r}
+#Merge the split_seurat
+merged_unintegrated <- merge(x = split_seurat[[1]],
+                             y = split_seurat[-1],
+                             add.cell.ids = names(split_seurat))
+
+#Append doublets
+merged_unintegrated <- merged_unintegrated %>% 
+  AddMetaData(
+  metadata = combined_doublets[Cells(merged_unintegrated), c("DF.classifications", "pANN")]
+)
+#Extract variable features over all the objects
+var_features <- SelectIntegrationFeatures(object.list = split_seurat, nfeatures = 5000)
+#Set variable features for merged_unintegrated
+VariableFeatures(merged_unintegrated) <- var_features
+
+merged_unintegrated <- RunPCA(
+  merged_unintegrated,
+  assay = "SCT",
+  npcs = 100,
+  verbose = F
+)
+
+merged_unintegrated <- RunUMAP(
+  merged_unintegrated,
+  dims = 1:50,
+  reduction = "pca"
+)
+```
+
+```{r}
+#And clustering, come back when I get this information
+
+```
+
+
+## Exploration
+
+```{r}
+#Fixing levels
+merged_unintegrated@meta.data <- merged_unintegrated@meta.data %>% 
+  mutate(timepoint = fct_relevel(timepoint, "0_hpa", "0_hpa_tail", "6_hpa", "12_hpa", "24_hpa", "48_hpa",
+                                 "72_hpa", "72_hpa _only_regen", "168_hpa", "336_hpa"))
+```
+
+
+With the basics done, we can now plot it out to see how it looks.
+
+```{r}
+umap_unintegrated_time <- merged_unintegrated %>% 
+  DimPlot(reduction = "umap", group.by = "timepoint", raster = F,
+          pt.size = 0.0000001) +
+  ggtitle("Unintegrated - Timepoint")
+  
+umap_unintegrated_time_split <- merged_unintegrated %>% 
+  DimPlot(reduction = "umap", group.by = "timepoint", raster = F, 
+          split.by = "timepoint",
+          pt.size = 0.0000001) +
+  ggtitle("Unintegrated - Timepoint")
+
+umap_unintegrated_chem <- merged_unintegrated %>% 
+  DimPlot(reduction = "umap", group.by = "chemistry", raster = F) +
+  ggtitle("Unintegrated - Chemistry")
+
+umap_unintegrated_rep <- merged_unintegrated %>% 
+  DimPlot(reduction = "umap", group.by = "replicate", raster = F)  +
+  ggtitle("Unintegrated - Replicate")
+
+pdf(file = "plots/unintegrated/umaps.pdf",
+    height = 8,
+    width = 11)
+print(umap_unintegrated_time)
+print(umap_unintegrated_chem)
+print(umap_unintegrated_rep)
+dev.off()
+```
+
+Looks good.
+
+```{r}
+#Save the object
+saveRDS(merged_unintegrated, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_unintegrated.RDS")
+```
+
+```{r}
+pdf(file = "~/desktop/umap_unint_time.pdf",
+    height = 8,
+    width = 12)
+print(umap_unintegrated_time)
+dev.off()
+```
+
+```{r}
+pdf(file = "~/desktop/umap_unint_time_split.pdf",
+    height = 8,
+    width = 36)
+print(umap_unintegrated_time_split)
+dev.off()
+```
+
+
+Let's look at Alex's mappings briefly
+
+### Alex's cell set-up
+
+```{r}
+old_scd <- readRDS(file = "/Volumes/vbc/MBG/FR-KT/_former_lab_members/_Alex/in_silico/R_Studio/2023_ATLAS_GENOME/_manuscript_code/_06_manuscript_code/data/scd.RDS")
+```
+
+Retrieve the metadata
+
+```{r}
+old_meta <- old_scd@meta.data
+
+#Add the cell type meta column
+cluster2celltype_alex <- c(
+  "0" = "epidermis",
+  "1" = "coelomic_mesoderm",
+  "2" = "striated_muscle",
+  "3" = "striated_muscle_2",
+  "4" = "hindgut",
+  "5" = "coe+_neurone",
+  "6" = "smooth_muscle",
+  "7" = "eleocyte",
+  "8" = "smooth_muscle_2",
+  "9" = "gcm+_neurone",
+  "10" = "striated_muscle_3",
+  "11" = "neurone",
+  "12" = "smooth_muscle_3",
+  "13" = "neurone_2",
+  "14" = "smooth_muscle_4",
+  "15" = "globin_screting",
+  "16" = "midgut",
+  "17" = "striated_muscle_4",
+  "18" = "neurone_3",
+  "19" = "sspo+",
+  "20" = "neurone_4",
+  "21" = "alpha-amylase+_gut",
+  "22" = "coelomic_mesoderm_2",
+  "23" = "hydma+",
+  "24" = "chaetal_sac",
+  "25" = "unidentified",
+  "26" = "neurone_5",
+  "27" = "ace+",
+  "28" = "boophilin_+",
+  "29" = "unidentified_2",
+  "30" = "epidermis_2",
+  "31" = "selenoprot-m+",
+  "32" = "calbindin-32+",
+  "33" = "cpo+",
+  "34" = "ciliated",
+  "35" = "unidentified_3",
+  "36" = "gcm+_neurone_2",
+  "37" = "peroxidasin+"
+)
+
+old_meta$cell_type_alex <- cluster2celltype_alex[as.character(old_meta$RNA_snn_res.0.5)]
+
+old_meta$cells <- rownames(old_meta)
+
+#remap the. labels
+orig_map <- c(
+  "trunk" = "trunk_1",
+  "trunkC" = "trunk_2",
+  "regen12hpa" = "12_hpa_segment_regen_1",
+  "regen24hpa" = "24_hpa_segment_regen_1",
+  "regen24hpaC" = "24_hpa_segment_regen_2",
+  "regen48hpa" = "48_hpa_segment_regen_1",
+  "regen48hpaC" = "48_hpa_segment_regen_2",
+  "regen72hpa" = "72_hpa_segment_regen_1",
+  "regen72hpaC" = "72_hpa_segment_regen_2"
+)
+
+# Make sure it's character
+old_meta$cells <- as.character(old_meta$cells)
+
+# Replace the prefix in the cells column
+old_meta$cells <- sapply(old_meta$cells, function(x) {
+  # Extract the prefix before the first underscore or dash
+  prefix <- sub("([-_].*)$", "", x)
+  
+  # Replace it with the new prefix from the map if it exists
+  new_prefix <- ifelse(prefix %in% names(orig_map), orig_map[prefix], prefix)
+  
+  # Combine with the rest of the barcode
+  sub(prefix, new_prefix, x)
+})
+
+```
+
+Append this onto the new one
+
+```{r}
+merged_unintegrated@meta.data <- merged_unintegrated@meta.data |> 
+  left_join(old_meta[, c("cells", "cell_type_alex")],
+            by = c("cells" = "cells"))
+
+merged_unintegrated@meta.data$cell_type_alex[is.na(merged_unintegrated@meta.data$cell_type_alex)] <- "New"
+
+#Did something weird
+rownames(merged_unintegrated@meta.data) <- merged_unintegrated@meta.data$cells
+```
+
+And then plot:
+
+```{r}
+# Extract UMAP embeddings + metadata
+umap_df <- Embeddings(merged_unintegrated, "umap") %>% as.data.frame()
+umap_df$cell_type_alex <- merged_unintegrated$cell_type_alex
+umap_df$alpha_val <- ifelse(umap_df$cell_type_alex == "New", 0.03, 1)
+
+# Make the plot directly with ggplot2
+alex_cells_corrected <- ggplot(umap_df, aes(x = umap_1, y = umap_2, color = cell_type_alex, alpha = alpha_val)) +
+  geom_point(size = 0.5) +
+  scale_alpha_identity() +
+  scale_color_manual(values = {
+    all_groups <- unique(umap_df$cell_type_alex)
+    base_colors <- scCustomize::DiscretePalette_scCustomize(length(all_groups), palette = "varibow")
+    names(base_colors) <- all_groups
+    base_colors["New"] <- "grey50"
+    base_colors
+  }) +
+  theme_minimal() +
+  guides(
+    color = guide_legend(override.aes = list(size = 4))  
+  )
+```
+
+Okay looks mostly the same.
+
+
+
+

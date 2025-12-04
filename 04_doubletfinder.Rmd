@@ -1,0 +1,113 @@
+# Doublet Finder
+
+As part of quality control, we also need to assess if there are potentially doublets in the data. It is important to note that this is not GROUNDTRUTH of whether reads assigned to a cell barcode are actually a doublet, but a prediction of whether it is a doublet. It is also sensitive to cells which are heterotypic (i.e., seem to be made of two different cell types), and insensitive to cells that are homotypic (i.e., seem to be made up of two of the same cell type). 
+
+In our dataset, it is very important to consider that, when it assesses cells which it thinks is inbetween two clusters (i.e., displaying a transcriptome that is similar to both) and concludes it is a "doublet", it could be a cell in a transitionary state. Therefore, it is important to take in the number of UMIs/features as well if we are deciding if a cell is doublet in my opinion. For example, we could expect a double to have 2X the UMIs and above average number of features. Again, we can counter this by saying that this could be a hypertranscriptomic cell.
+
+This requires an estimated doublet rate. For 10X, this is reported to be ~0.8% per 1000 cells recovered. I will use this guideline, but I'm not sure if I 100% trust it.
+
+## Basics
+
+```{r}
+#read in the split seurat if needed
+#split_seurat <- readRDS(file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/01_seurat/split_seurat.RDS")
+```
+
+This is the SCTransformed from the previous .rmd
+
+We just need to add PCA and UMAP to each sample
+
+```{r}
+for (i in 1:length(split_seurat)) {
+    split_seurat[[i]] <- RunPCA(split_seurat[[i]], npcs = 50, assay = "SCT", verbose = F)
+}
+
+for (i in 1:length(split_seurat)) {
+    split_seurat[[i]] <- RunUMAP(split_seurat[[i]], dims = 1:50, reduction = "pca")
+}
+```
+
+Great! Now we can move to running the doublet finder
+
+## Running doublet finder
+
+First we can optimise the parameters by doing a parameter sweep.
+
+```{r}
+#Make empty lists
+param_sweep_list = list()
+sum_sweep_list = list()
+bcmvn_list = list()
+
+for (i in seq_along(split_seurat)) {
+  cat("Running param sweep for sample", i, "...\n")
+  
+  # Run parameter sweep
+  sweep.res <- paramSweep(split_seurat[[i]], PCs = 1:50, sct = TRUE)
+  param_sweep_list[[i]] <- sweep.res
+  
+  # Summarize results
+  sweep.stats <- summarizeSweep(sweep.res, GT = FALSE)
+  sum_sweep_list[[i]] <- sweep.stats
+  
+  # Find pK
+  bcmvn <- find.pK(sweep.stats)
+  bcmvn_list[[i]] <- bcmvn
+}
+
+#Extract the optimal pK per sample
+opt_pK <- sapply(bcmvn_list, function(x) {
+  as.numeric(as.character(x$pK[which.max(x$BCmetric)]))
+})
+
+opt_pK
+```
+
+And now, we can run doubletFinder
+
+```{r}
+for (i in seq_along(split_seurat)) {
+  cat("Running DoubletFinder for sample", i, "...\n")
+  
+  nExp_poi <- round(0.075 * ncol(split_seurat[[i]])) # adjust expected doublet rate
+  
+  split_seurat[[i]] <- doubletFinder(
+    split_seurat[[i]], 
+    PCs = 1:50, 
+    pN = 0.25, 
+    pK = opt_pK[i], 
+    nExp = nExp_poi,
+    sct = TRUE
+  )
+}
+```
+
+This adds the label to the metadata file for each. 
+
+Ultimately, I won't remove these. I think it is useful to be aware of these and if any downstream results are related to "doublets", but they could well be real.
+
+```{r}
+#Save this with new metadata
+saveRDS(split_seurat, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/split_seurat.RDS")
+```
+
+```{r}
+#Extract the classifications of singlet or doublet
+doublets <- lapply(seq_along(split_seurat), function(i) {
+  df <- split_seurat[[i]]@meta.data[, grep("DF.classifications|pANN", colnames(split_seurat[[i]]@meta.data)), drop = FALSE]
+  colnames(df) <- sub(".*DF\\.classifications.*", "DF.classifications", colnames(df))
+  colnames(df) <- sub(".*pANN.*", "pANN", colnames(df))
+  df$cell <- rownames(df)
+  df
+})
+
+#combine the meta
+combined_doublets <- do.call(rbind, doublets)
+rownames(combined_doublets) <- combined_doublets$cell
+
+saveRDS(combined_doublets, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/doublets.RDS")
+```
+
+
+
+

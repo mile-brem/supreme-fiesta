@@ -1,0 +1,3174 @@
+# Cell type annotation
+
+At this point, I have the top 30 genes for clusters in both the global integration and local integration steps.
+
+I will now go through the laborious process of labelling all these clusters as potentially biological relevant cells. Here there are several strategies that the community use which are split between manual and automatic. We cannot use automatic as there are no previous datasets to compare to.
+
+For manual, we can draw upon two pieces of information. Geneset/GO terms and markers gained in the previous clustering sections.
+
+I will also make a comparison to Alex's single cell dataset for the old samples.
+
+```{r}
+#Load in look up table
+look_up_table <- read_tsv(file = "/Volumes/MILES_SDD/00_data/00.01_genomes/LUT/VIE1_merged_2025_11_LUT.tab", col_names = F)
+names(look_up_table) <- c("gene", "protein_prediction")
+
+look_up_table <- look_up_table |> 
+    mutate(gene = gsub("_", "-", gene))
+```
+
+
+## Alex's Cell type annotation
+
+```{r}
+old_scd <- readRDS(file = "/Volumes/vbc/MBG/FR-KT/_former_lab_members/_Alex/in_silico/R_Studio/2023_ATLAS_GENOME/_manuscript_code/_06_manuscript_code/data/scd.RDS")
+```
+
+Retrieve the metadata
+
+```{r}
+old_meta <- old_scd@meta.data
+
+#Add the cell type meta column
+cluster2celltype_alex <- c(
+  "0" = "epidermis",
+  "1" = "coelomic_mesoderm",
+  "2" = "striated_muscle",
+  "3" = "striated_muscle_2",
+  "4" = "hindgut",
+  "5" = "coe+_neurone",
+  "6" = "smooth_muscle",
+  "7" = "eleocyte",
+  "8" = "smooth_muscle_2",
+  "9" = "gcm+_neurone",
+  "10" = "striated_muscle_3",
+  "11" = "neurone",
+  "12" = "smooth_muscle_3",
+  "13" = "neurone_2",
+  "14" = "smooth_muscle_4",
+  "15" = "globin_screting",
+  "16" = "midgut",
+  "17" = "striated_muscle_4",
+  "18" = "neurone_3",
+  "19" = "sspo+",
+  "20" = "neurone_4",
+  "21" = "alpha-amylase+_gut",
+  "22" = "coelomic_mesoderm_2",
+  "23" = "hydma+",
+  "24" = "chaetal_sac",
+  "25" = "unidentified",
+  "26" = "neurone_5",
+  "27" = "ace+",
+  "28" = "boophilin_+",
+  "29" = "unidentified_2",
+  "30" = "epidermis_2",
+  "31" = "selenoprot-m+",
+  "32" = "calbindin-32+",
+  "33" = "cpo+",
+  "34" = "ciliated",
+  "35" = "unidentified_3",
+  "36" = "gcm+_neurone_2",
+  "37" = "peroxidasin+"
+)
+
+old_meta$cell_type_alex <- cluster2celltype_alex[as.character(old_meta$RNA_snn_res.0.5)]
+
+old_meta$cells <- rownames(old_meta)
+
+#remap the. labels
+orig_map <- c(
+  "trunk" = "trunk_1",
+  "trunkC" = "trunk_2",
+  "regen12hpa" = "12_hpa_segment_regen_1",
+  "regen24hpa" = "24_hpa_segment_regen_1",
+  "regen24hpaC" = "24_hpa_segment_regen_2",
+  "regen48hpa" = "48_hpa_segment_regen_1",
+  "regen48hpaC" = "48_hpa_segment_regen_2",
+  "regen72hpa" = "72_hpa_segment_regen_1",
+  "regen72hpaC" = "72_hpa_segment_regen_2"
+)
+
+# Make sure it's character
+old_meta$cells <- as.character(old_meta$cells)
+
+# Replace the prefix in the cells column
+old_meta$cells <- sapply(old_meta$cells, function(x) {
+  # Extract the prefix before the first underscore or dash
+  prefix <- sub("([-_].*)$", "", x)
+  
+  # Replace it with the new prefix from the map if it exists
+  new_prefix <- ifelse(prefix %in% names(orig_map), orig_map[prefix], prefix)
+  
+  # Combine with the rest of the barcode
+  sub(prefix, new_prefix, x)
+})
+
+```
+
+Append this onto the new one
+
+```{r}
+merged_local_int@meta.data <- merged_local_int@meta.data |> 
+  left_join(old_meta[, c("cells", "cell_type_alex")],
+            by = c("cells" = "cells"))
+
+merged_local_int@meta.data$cell_type_alex[is.na(merged_local_int@meta.data$cell_type_alex)] <- "New"
+
+#Did something weird
+rownames(merged_local_int@meta.data) <- merged_local_int@meta.data$cells
+```
+
+Plot
+
+```{r}
+# Extract UMAP embeddings + metadata
+umap_df <- Embeddings(merged_local_int, "umap") %>% as.data.frame()
+umap_df$cell_type_alex <- merged_local_int$cell_type_alex
+umap_df$alpha_val <- ifelse(umap_df$cell_type_alex == "New", 0.03, 1)
+
+# Make the plot directly with ggplot2
+alex_cells_corrected <- ggplot(umap_df, aes(x = umap_1, y = umap_2, color = cell_type_alex, alpha = alpha_val)) +
+  geom_point(size = 0.5) +
+  scale_alpha_identity() +
+  scale_color_manual(values = {
+    all_groups <- unique(umap_df$cell_type_alex)
+    base_colors <- scCustomize::DiscretePalette_scCustomize(length(all_groups), palette = "varibow")
+    names(base_colors) <- all_groups
+    base_colors["New"] <- "grey50"
+    base_colors
+  }) +
+  theme_minimal() +
+  guides(
+    color = guide_legend(override.aes = list(size = 4))  
+  )
+```
+
+Great! Finally! Print that!!!
+
+```{r}
+pdf("~/desktop/alex_mappings.pdf",
+    width = 12,
+    height = 8)
+print(alex_cells_corrected)
+dev.off()
+```
+
+
+## Cell type annotation (local)
+
+I will now look at cell type annotation for the local integration
+
+```{r}
+#Load in the top30 if you don't have them.
+#top30 <- readRDS(top30, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/top30_markers.RDS")
+```
+
+Create the lookup tables
+
+```{r}
+
+
+#Subset look-up table to mny cluster marker genes
+top30 <- top30 |> 
+    inner_join(look_up_table, by = "gene") 
+```
+
+Also producing a wider list of markers
+
+```{r}
+lookup_subsets <- lapply(all_markers, function(cluster_df) {
+  #Move genes to columnms
+  cluster_df$gene <- rownames(cluster_df)
+  
+  # Extract genes from this cluster
+  cluster_genes <- cluster_df$gene
+  
+  # Subset lookup table to these genes
+  subset_df <- look_up_table[look_up_table$gene %in% cluster_genes, ]
+  
+  return(subset_df)
+})
+```
+
+We can now annotate.
+
+Now some of my job is easier as I know which markers are likely to come out for a lot of them from Alex's publication.
+
+Setting up what I need.
+
+```{r}
+# Get unique clusters
+clusters <- unique(top30$cluster_id)
+
+# Initialize lists to store results
+cluster_markers_list <- list()
+cluster_plots_list <- list()
+
+for (clust in clusters) {
+  
+  # Extract top markers for this cluster
+  cluster_markers <- top30 %>%
+    filter(cluster_id == clust) %>%
+    select(gene, avg_fc, protein_prediction)
+  
+  cluster_markers_list[[clust]] <- cluster_markers
+  
+  # Extract just gene names as character vector
+  cluster_genes <- as.character(cluster_markers$gene)
+  
+  # Generate FeaturePlot for this cluster
+  cluster_plot <- FeaturePlot(
+    merged_local_int,
+    features = cluster_genes,
+    reduction = "umap",
+    order = T,
+    raster = F,
+    stroke.size = 0.5,
+    min.cutoff = "q10"
+  )
+  
+  cluster_plots_list[[clust]] <- cluster_plot
+}
+```
+### Clusters and their markers
+
+#### Cluster 1
+
+This is likely our epidermis.
+
+```{r}
+View(cluster_markers_list[[1]])
+```
+
+```{r}
+cluster_plots_list[[1]]
+```
+
+Here we the epidermal protein 1 again. There a few other interesting proteins including Ependymin, CD109 which is related to TGF-B.
+
+Labelling as Epidermis
+
+#### Cluster 2
+
+This is likely our coelomic mesoderm. 
+
+```{r}
+View(cluster_markers_list[[2]])
+```
+
+```{r}
+cluster_plots_list[[2]]
+```
+
+It has ccdc134 so yes.
+
+#### Cluster 3
+
+This is likely our striated muscle
+
+```{r}
+View(cluster_markers_list[[3]])
+```
+
+```{r}
+cluster_plots_list[[3]]
+```
+
+And yes, it has almost all muscle related signatures especially ones which indicate they are striated such as the presence of z-disc related proteins.
+
+#### Cluster 4
+
+This one will be interesting. Alex mostly labelled this as smooth muscle.
+
+```{r}
+View(cluster_markers_list[[4]])
+```
+
+```{r}
+cluster_plots_list[[4]]
+```
+
+It is a mix of no similarity and some recognisable muscle markers. 
+
+Specifically, Myomesin-1, NCAM1A (a heart muscle marker as well as neuronal), and finally ARMC8 which isn't a specifc marker.
+
+I looked at this reference https://elifesciences.org/articles/19607 which investigates striated and smooth muscle evolution. It identifies some transcription factors for muscle fibers.
+
+I find that this cluster expresses gata 4/5/6. but not nk3.2. Other markers for smooth muscle aren't very good at localising to this position.which fucking sucks. I think we're fine to call this smooth muscle tho.
+
+#### Cluster 5
+
+```{r}
+View(cluster_markers_list[[5]])
+```
+
+```{r}
+cluster_plots_list[[5]]
+```
+
+This is the neuronal cluster. Assess potency later.
+
+Here is syn and elav tho
+
+```{r}
+cluster_syn <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000003615",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_syn
+```
+
+```{r}
+cluster_elav <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000002639",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_elav
+```
+Syn is mostly constrained to this and other neuronal clusters, but Elav is a little more all over. Has a nice localised expression in one of them tho.
+
+Just one more on the elav side. This was a hit for elav4 in zebrafish
+
+```{r}
+cluster_elav4 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000001662",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_elav4
+```
+Okay that actually seems quite nice and could be a contender to look at
+
+#### Cluster 6
+
+```{r}
+View(cluster_markers_list[[6]])
+```
+
+```{r}
+cluster_plots_list[[6]]
+```
+
+This is likely the mid-gut or what Alex named the midgut. Here just confirming that. 
+
+Gets a lot of hits for PAR14. Generally other markers are hits for intestinal stuff. However let's look at what may be HNF4 which is a transcription factor for the gut.
+
+```{r}
+cluster_HNF4 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000014522",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_HNF4
+```
+Hmm not really localised to the gut so I don't think this is the right hit for that protein. 
+
+#### Cluster 7
+
+```{r}
+View(cluster_markers_list[[7]])
+```
+
+```{r}
+cluster_plots_list[[7]]
+```
+
+Here we have that interesting cluster that expresses retinal homeobox. However, this matches to thrombospondin in other organs. I'm not 100% whether this is retinal homeobox. Based on the proximity to the rest of the smooth muscle. 
+
+Alex split these into two clusters, but I'm sure his match either.
+
+I'm going to tentatively label these as neurones, but I'm not sure about it. We'll see how these cluster when moving to my neuronal subclustering. It would be great to know what 15152 is.
+
+#### Cluster 8
+
+```{r}
+View(cluster_markers_list[[8]])
+```
+
+```{r}
+cluster_plots_list[[8]]
+```
+
+Probable smooth muscle.
+
+Ah now fucking substiliin 2 shows up. Defo smooth muscle, but I'm not sure what differentiates it from the other one. They are not muscles in an in intermediate state possibly as they're not in the regen onlys really.
+
+I'm going to assign smooth muscle and "possible combine with 4"
+
+#### Cluster 9
+
+```{r}
+View(cluster_markers_list[[9]])
+```
+
+```{r}
+cluster_plots_list[[9]]
+```
+
+Neuropeptidergic neurones
+
+#### Cluster 10
+
+```{r}
+View(cluster_markers_list[[10]])
+```
+
+```{r}
+cluster_plots_list[[10]]
+```
+
+Ah so alex labelled theese as gcm+ neurones. I think these may represent a more neuronal progenitor population. Here, there are lots of no similarity protein predictions, but I'm going to perhaps cherry pick and have a look at them
+
+```{r}
+cluster_CEPU1 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000011362",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_CEPU1
+```
+Oh wow, pretty vgood on that one. This is a protein in chickens which has been assoicated with the developing spinal cord
+
+```{r}
+cluster_DET1 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000012013",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_DET1
+```
+Despite some wide spead low expression but there is high expression in this cluster. I am confident this is a localised marker.
+
+Here we have delta as well.
+
+```{r}
+delta_genes <- c("VIE-hap1G00000003814", "VIE-hap1G00000006734", "VIE-hap1G00000004307", "VIE-hap1G00000025691")
+
+cluster_delta <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = delta_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+There is one promising delta, but ther others look a bit weird.
+
+Let's check for jagged
+
+```{r}
+cluster_jagged<- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000004553",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Doesn't look as good. One last look at notch
+
+```{r}
+notch_genes = c("VIE-hap1G00000025083", "VIE-hap1G00000025085")
+
+cluster_notch <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = notch_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Weirdly it localises to what we've labelled as gut.
+
+I am going to look at some other neurogenesis markers here:
+VIE_hap1G00000014628 - A hit for Dorsal-ventral patterning tolloid-like protein 1 from danio
+VIE_hap1G00000014101 - A hit for Neuropilin and tolloid-like protein 2 OS=Homo sapiens
+VIE_hap1G00000003589 - A hit for Dorsal-ventral patterning tolloid-like protein 1 OS=danio as why not have 1 as well
+VIE_hap1G00000007817 - A hit for platynereis neurogenin
+
+```{r}
+dev_neuro_genes <- c("VIE-hap1G00000014628", "VIE-hap1G00000014101", "VIE-hap1G00000003589", "VIE-hap1G00000007817")
+
+cluster_dev_neuro <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = dev_neuro_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_dev_neuro
+```
+Okay these geneed up being not relevant for this cluster but VIE-hap1G00000014628 and VIE-hap1G00000007817 are relevant for other clusters.
+
+I'm going to label these neural progenitors for the moment. Perhaps these could signify a steadystate population of neural progenitors.
+
+#### Cluster 11
+
+This one will be interesting.
+
+```{r}
+View(cluster_markers_list[[11]])
+```
+
+```{r}
+cluster_plots_list[[11]]
+```
+
+Hmm this is a very interesting cluster. There are several proteins to link it to neuronal function, but there are also lots of muscle related genes. I'm realy tempted to label these as caridac myocytes 
+
+Let's look at one of their defining features which is this smooth muscle myosin
+
+```{r}
+cluster_SM_MHC <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000010914",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+cluster_SM_MHC
+```
+
+Looks like dogshit. But I suppose you can link it to some of the smooth muscle clusters I identified above.
+
+Hmm. I think could there be a possibility that the caridac myocytes have the potential the carry potential/current. Not out of the bounds i guess considering the electrical ability of the heart.
+
+#### Cluster 12
+
+```{r}
+View(cluster_markers_list[[12]])
+```
+
+```{r}
+cluster_plots_list[[12]]
+```
+This is a very interesting cluster that is extremely metabolically active. Alex named these eleocytes and I am somewhat inclined to agree. Of interest to me however is they express delta..... or what may be delta. This is not delta thought i think
+
+#### Cluster 13
+
+```{r}
+View(cluster_markers_list[[13]])
+```
+
+```{r}
+cluster_plots_list[[13]]
+```
+
+Here we have this very interesting Kremen cluster. This would be good to confirm as it is only a prediction. It acts as a regulator of wnt through LRP6. 
+
+It is linked to anterior-posterior patterning and it is known to be expressed in the floor plate.
+
+Let's look at other floor plate markers
+
+```{r}
+floor_plate_markers <- c("VIE-hap1G00000006852", "VIE-hap1G00000005862")
+
+cluster_floor_plate <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = floor_plate_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Does not localise. 
+
+Inconclusive whether this is any floorplate
+
+It does however have a heavy expression of notch2 (or what may be notch2). This is interesting if they are expressed together. I'm not sure if platynereis even has a notch2. That'd be fucking interesting.
+
+#### Cluster 14
+
+```{r}
+View(cluster_markers_list[[14]])
+```
+
+```{r}
+cluster_plots_list[[14]]
+```
+
+There is nothing to differentiate this cluster. All I can specify is that they have vesicles/could be secretory and involved in endocytosis.
+
+It "MAY" express notch2. There is a hit for it but inconclusive
+
+Notch2 here:
+
+```{r}
+cluster_kremen <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000023721",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  ) +
+  ggtitle("Kremen* - VIE-hap1G00000023721")
+```
+
+Other notch candidates possibly human BLAT:
+- VIE_hap1G00000024406
+- VIE-hap1G00000002421
+- VIE_hap1G00000028558
+VIE_hap1G00000013914
+VIE_hap1G00000019813
+VIE_hap1G00000024682
+VIE_hap1G00000028966
+VIE_hap1G00000029949
+VIE_hap1G00000013914
+
+```{r}
+notch2_genes <- c("VIE-hap1G00000000106", "VIE-hap1G00000024406", "VIE-hap1G00000002421", "VIE-hap1G00000028558")
+
+cluster_other_notches <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = notch2_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+- VIE-hap1G00000002421 this one makes sense. It also aligns with the frog one.
+
+```{r}
+pdf(file = "~/desktop/kremen.pdf",
+    height = 8,
+    width = 16)
+print(cluster_kremen)
+dev.off()
+```
+
+
+#### Cluster 15
+
+cs3 VIE-hap1G00000002158
+
+There are no DEGs in this cluster. The problem is I think this one is specifically an undercluster.
+
+This may be chaetal sacs. Here there is heavy localisation of cs3.
+
+```{r}
+cluster_cs3 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000002158",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+There also could be fcmg5 which is a marker for chaetal sacs as well.
+VIE_hap1G00000001877
+VIE_hap1G00000002135
+VIE_hap1G00000002136
+
+```{r}
+fcmg5_genes <- c("VIE-hap1G00000001877", "VIE-hap1G00000002135", "VIE-hap1G00000002136")
+
+cluster_fcmg5 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = fcmg5_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Ah all of these pretty clearly express in that cluster. Maybe this is two genes that she had and what she looked at actually both mapped to chaetal sacs so she couldn't differentiate.
+
+Need to subcluster
+
+#### Cluster 16
+
+```{r}
+View(cluster_markers_list[[15]])
+```
+
+```{r}
+cluster_plots_list[[15]]
+```
+
+I don't trust these DEGs from the clustering on the UMAP.
+
+I then looked at all the markers as the above just didn't make sense
+
+```{r}
+c16_genes <- c("VIE-hap1G00000020917", "VIE-hap1G00000012860", "VIE-hap1G00000007580", "VIE-hap1G00000030656", "VIE-hap1G00000004464", "VIE-hap1G00000018631")
+
+cluster_c16 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = c16_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Okay that's better and you can actually see there are neurosecretory cells.
+
+#### Cluster 17
+
+GATA456
+
+```{r}
+View(cluster_markers_list[[16]])
+```
+
+```{r}
+cluster_plots_list[[16]]
+```
+
+Really broad expresion and nothing to differentiate these markers. Comes off striatal muscles. 
+
+```{r}
+cluster_gata456 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000027287",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+It has high expression of Gata4/5/6 though. It also expresses troponin T
+
+```{r}
+cluster_troponin <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000016371",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Some sort of striatal muscles. 
+
+#### Cluster 18
+
+```{r}
+View(cluster_markers_list[[17]])
+```
+
+```{r}
+cluster_plots_list[[17]]
+```
+
+Haemogloblin-producing cells
+
+#### Cluster 19
+
+```{r}
+View(cluster_markers_list[[18]])
+```
+
+```{r}
+cluster_plots_list[[18]]
+```
+
+Hmm a bit of funny one. Expression of proteins related to venoms which is fun and one related to Forkhead-associated domain-containing protein 1 which is specifically related to spermatogenesis. 
+
+"Gamete producing cells"?
+
+#### Cluster 20
+
+```{r}
+View(cluster_markers_list[[19]])
+```
+
+```{r}
+cluster_plots_list[[19]]
+```
+
+So far undefined here. Alex couldn't identify these either. Some really nice and specific markers but nothing really shows up well.
+
+There's nothing to suggest something interesting but let's see what the GO turns up.
+
+#### Cluster 21
+
+This is Alex's neurone 5 but it is definitely not neurones.
+
+```{r}
+View(cluster_markers_list[[20]])
+```
+
+```{r}
+cluster_plots_list[[20]]
+```
+
+Hmm it has a broad range of functions and from earlier I can see that also has C1q which is the innate immune system. This is almost certainly the ones that float about.
+
+I'll label this "Coelomocytes" for the moment.
+
+There are also lots of markers related to B cells and various immune functions.
+
+#### Cluster 22
+
+```{r}
+View(cluster_markers_list[[21]])
+```
+
+```{r}
+cluster_plots_list[[21]]
+```
+
+This could be a glial cell. It displays an interesting expression of ver-1 (c elegans) which is related to glial remodelling.
+
+#### Cluster 23
+
+```{r}
+View(cluster_markers_list[[22]])
+```
+
+```{r}
+cluster_plots_list[[22]]
+```
+
+Alex put these as ace+. Top markers as determined by DEG show no specificity. Very curious. 
+
+#### Cluster 24
+
+```{r}
+View(cluster_markers_list[[23]])
+```
+
+```{r}
+cluster_plots_list[[23]]
+```
+
+Expresses what may be reelin which is interesting. Involved in neuronal axon guidance.
+
+#### Cluster 25
+
+```{r}
+View(cluster_markers_list[[24]])
+```
+
+```{r}
+cluster_plots_list[[24]]
+```
+
+Interesting DEGs, but it looks like none of these are specific. Hedgehog isn't too bad. It's broadly expressed in 1 and a couple other places but only really clustering here.
+
+Would be nice to know the no similarity ones.
+
+Skipping for the moment and perhaps discuss this with Florian.
+
+#### Cluster 26
+
+```{r}
+View(cluster_markers_list[[25]])
+```
+
+```{r}
+cluster_plots_list[[25]]
+```
+
+Alex labelled these as cpo+, but I don't think this is conclusive and there are lots of no similarity proteins which means we cannot determine this.
+
+
+
+### Known marker assessment
+
+Above I mostly looked at the FindConservedMarkers and sometimes touched upon markers which are known to be related to cell types.
+
+Now I'm going to look in more detail at the known markers.
+
+### GO analysis
+
+Thankfully Leonie has provided me with an interpro scan and GO terms for genes.
+
+I can take the findconservedmarkers output and test this to see if it is enriched for any termns.
+
+Here we have to create a annotation GO library. This is provided by Oleg so big up.
+
+```{r}
+library(clusterProfiler)
+library(enrichplot)
+library(AnnotationForge)
+
+#Oleg's script for GO analyses.
+
+#First you have to run this to import the go terms as a 'library' into R
+#To make Pladu annotation library for R
+#The files below were made using the createTerm2Gene.pl script ran on interproscan output.
+go=read.table("/Volumes/MILES_SDD/00_data/00.01_genomes/Go_terms/GO_Oleg/gid.go")
+gene=read.table("/Volumes/MILES_SDD/00_data/00.01_genomes/Go_terms/GO_Oleg/gname.go")
+
+colnames(gene) <- gene[1,]
+gene <- gene[-c(1),]
+#gene$GENENAME <- gsub("_[+-]?\\d+[+-]\\d+$", "", gene$GENENAME)
+#gene$SYMBOL <- gsub("_[+-]?\\d+[+-]\\d+$", "", gene$SYMBOL)
+
+colnames(go) <- go[1,]
+go <- go[-1,]
+
+
+makeOrgPackage( gene_info=gene, go=go,
+                version="0.1",
+                maintainer="Pladu <test@test.com>",
+                author=" Pladu <test@test.com>",
+                tax_id="0",
+                genus="Pladu",
+                species="Pladu",
+                goTable="go",
+                outputDir = "/Volumes/MILES_SDD/00_data/00.01_genomes/Go_terms/GO_Oleg/")
+
+
+install.packages("/Volumes/MILES_SDD/00_data/00.01_genomes/Go_terms/GO_Oleg/org.PPladu.eg.db/",repos = NULL,type="source")
+
+
+#Take genes in the 'file' and test their enrichment against whole set of genes according to different GO classifications (molecular functions, biological process etc)
+#Import the go terms as a 'library' into R
+library(org.PPladu.eg.db)
+library(GO.db)
+
+go2name <- AnnotationDbi::select(GO.db, keys=keys(GO.db), columns=columns(GO.db)[1:2])
+```
+
+We can then assess enrichment using this. First, we create the background to test against.
+
+```{r}
+# Read background gene list
+allgenes <- read.table("/Volumes/MILES_SDD/00_data/00.01_genomes/Go_terms/GO_Oleg/term2gene")
+ag <- unique(as.character(allgenes[,2]))
+background_genes <- unique(ag)
+```
+
+Then our genes of interest are in all_markers which is list of the markers per cluster
+
+```{r}
+marker_genes4GO <- map(all_markers, rownames)
+# correct the - 
+marker_genes4GO <- map(marker_genes4GO, ~ gsub("-", "_", .x))
+#clusters <- levels(Idents(merged_local_int))
+#marker_genes4GO <- names(clusters)
+# remove 15
+marker_genes4GO <- marker_genes4GO[-15]
+```
+
+We then set a function to test the enrichment
+
+```{r}
+perform_and_save_enrichment <- function(gene_list, background_genes, cluster_id, output_dir) {
+  for (ont in ontologies) {
+    tryCatch({
+      cat("Performing enrichment analysis for Cluster", cluster_id, "ontology:", ont, "\n")
+
+# Perform GO enrichment
+    ego <- enrichGO(
+      gene          = gene_list,
+      universe      = background_genes,
+      keyType       = "GENENAME",
+      OrgDb         = org.PPladu.eg.db,
+      ont           = ont,
+      pAdjustMethod = "BH",
+      pvalueCutoff  = 0.05,
+      qvalueCutoff  = 0.05 ,
+      readable      = TRUE
+    )
+    
+    #Return the result to an empty list
+    ego_results[[cluster_id]] <- ego
+    
+# Save results as CSV
+    result_file <- file.path(output_dir, paste0(cluster_id, "_", ont, "_enrichment.csv"))
+    write.csv(ego@result, result_file, row.names = FALSE)
+
+    # Generate and save plots
+    #if (nrow(ego@result) > 0) {
+      # Dotplot
+     # p1 <- dotplot(ego, showCategory = 20)
+    #  ggsave(file.path(output_dir, paste0(cluster_id, "_", ont, "_dotplot.png")), p1, width = 10, height = 8)
+
+      # Enrichment map
+     # p2 <- emapplot(pairwise_termsim(ego))
+      #ggsave(file.path(output_dir, paste0(cluster_id, "_", ont, "_emapplot.png")), p2, width = 10, height = 8)
+      
+      # Category netplot
+      #p3 <- cnetplot(ego, categorySize = "pvalue", foldChange = NULL)
+      #ggsave(file.path(output_dir, paste0(cluster_id, "_", ont, "_cnetplot.png")), p3, width = 12, height = 10)
+   # } else {
+    #  cat("No enriched terms found for", ont, "ontology\n")
+     })
+  }
+}
+```
+
+Then let's loop through the list
+
+```{r}
+ontologies = "ALL"
+ego_results = list()
+
+for (i in seq_along(marker_genes4GO)) {
+  
+  cluster_id <- i                # cluster 1, 2, 3...
+  gene_vec   <- marker_genes4GO[[i]]  # the vector of gene IDs
+  output_dir = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/GO_outs"
+  
+  perform_and_save_enrichment(
+    gene_list        = gene_vec,
+    background_genes = background_genes,
+    cluster_id       = cluster_id,
+    output_dir       = output_dir
+  )
+}
+```
+
+These should be taken with a good grain of salt if it's only one or two genes per GO.
+
+
+### Spare feature plot
+
+```{r}
+cells_to_plot <- WhichCells(merged_local_int, expression = timepoint == "0_hpa")
+
+
+cluster_feature_plot <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    split.by = "timepoint",
+    features = "VIE-hap1G00000027287",
+    raster = F,
+    order = T
+  )
+```
+
+
+```{r}
+pdf("~/desktop/time_gata.pdf",
+    height = 10,
+    width = 50)
+print(cluster_feature_plot)
+dev.off()
+```
+
+
+```{r}
+pdf(file = "~/desktop/retinal.pdf",
+    height = 8,
+    width = 14)
+print(cluster_feature_plot)
+dev.off()
+
+```
+
+
+### Cell type table
+
+```{r}
+cluster2celltype_local <- c(
+  "1" = "Epidmeris",
+  "2" = "Coelomic_Mesoderm",
+  "3" = "Striated_Muscle",
+  "4" = "Smooth_muscle",
+  "5" = "Neuronal",
+  "6" = "Enterocyte/mid-gut",
+  "7" = "Neuronal_2*/check_upon_subcluster",
+  "8" = "Smooth_muscle/combinew/4",
+  "9" = "Neuropeptigeric_neurones",
+  "10" = "Neuroprogenitors***",
+  "11" = "Cardiac_myocytes***ORdeveloping_striatal_muscle",
+  "12" = "Eleocyte",
+  "13" = "Collar_receptor_cells",
+  "14" = "Neuronal_3",
+  "15" = "Chaetal_sacs",
+  "16" = "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells",
+  "17" = "Gata4/5/6_striatal_muscle*",
+  "18" = "Haemoglobulin-producing cells",
+  "19" = "Unidentified_gut_possible_gameteproducing/FHAD1+",
+  "20" = "Unidentified_possible_muscle",
+  "21" = "Coelomocytes",
+  "22" = "Unidentified_2",
+  "23" = "Enterocyte/mid-gut_2",
+  "24" = "SIX4+_Reelin+_unidentified",
+  "25" = "hh+_population",
+  "26" = "Unidentified_3"
+)
+
+merged_local_int$celltype_local <- 
+  plyr::mapvalues(
+    merged_local_int$integrated_snn_res.0.4,
+    from = names(cluster2celltype_local),
+    to   = cluster2celltype_local
+  )
+
+merged_local_int <- RenameIdents(merged_local_int, cluster2celltype_local)
+```
+
+These are based on markers from conserved markers and GO terms of them.
+
+Let's have a look
+
+```{r}
+umap_cell_types <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  group.by = "subcluster15",
+  label = T,
+  label.size = 2.5,
+  raster = F,
+  stroke.size = 0.5
+) + 
+  NoLegend() + 
+  ggtitle("WIP cell types **NOT FINAL** - based on DEGs")
+```
+
+```{r}
+pdf(file = "~/desktop/WIP_cell_types.pdf",
+    width = 16,
+    height = 8)
+print(umap_cell_types)
+dev.off()
+```
+
+
+I will now try to assess the canonical markers to see if I can get a better idea for some of these clusters.
+
+```{r}
+cluster2celltype_local_lit <- c(
+  "1" = "Epidermis",
+  "2" = "Coelomic_Mesoderm",
+  "3" = "Striated_Muscle",
+  "4" = "Smooth_muscle",
+  "5" = "Neuronal",
+  "6" = "Enterocyte/mid-gut",
+  "7" = "Odd:part_neuronal/part_muscle",
+  "8" = "Smooth_muscle/combinew/4",
+  "9" = "Neuropeptigeric_neurones",
+  "10" = "Neural_progenitor_2",
+  "11" = "Cardiac_myocytes",
+  "12" = "Eleocyte?",
+  "13" = "Collar_receptor_cells",
+  "14" = "Neuronal_3",
+  "15_1" = "Chaetal_sacs",
+  "15_2" = "Neural_progenitor_2",
+  "15_3" = "Pol_protein+/possible_chloragogen_cell",
+  "16" = "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells",
+  "17" = "Striatal_muscle_2",
+  "18" = "Haemoglobulin-producing cells",
+  "19" = "a-amylase_gut/FHAD+",
+  "20" = "Unidentified_possible_muscle",
+  "21" = "Coelomocytes",
+  "22" = "Unidentified_2",
+  "23" = "Enterocyte/mid-gut_2",
+  "24" = "SIX4+_Reelin+_unidentified",
+  "25" = "hh+_population",
+  "26" = "Unidentified_3"
+)
+```
+
+### Cluster 15 sub-cluster
+
+This is a cluster that didn't really have marker genes. Canonically I know that chaetal sacs are in here, but this is only in one of the structures. Therfore, I am going to break this up.
+
+I can use the FindSubClusters function here:
+
+```{r}
+merged_local_int <- FindSubCluster(
+  object      = merged_local_int,
+  cluster     = "Chaetal_sacs",
+  graph.name  = "integrated_snn", 
+  subcluster.name = "subcluster_15", 
+  resolution  = 0.2,
+  algorithm = 4 
+)
+```
+Wow, that split into three which is great.
+
+Let's see
+
+```{r}
+umap_subcluster15 <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  group.by = "subcluster_15",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 2.5
+) + NoLegend()
+```
+
+Now I want to see the markers for this cluster.
+
+```{r}
+markers_chaetal_sacs_1 <- FindMarkers(
+  merged_local_int,
+  ident.1 = "Chaetal_sacs_1",
+  group.by = "subcluster_15"
+)
+markers_chaetal_sacs_2<- FindMarkers(
+  merged_local_int,
+  ident.1 = "Chaetal_sacs_2",
+  group.by = "subcluster_15"
+)
+markers_chaetal_sacs_3 <- FindMarkers(
+  merged_local_int,
+  ident.1 = "Chaetal_sacs_3",
+  group.by = "subcluster_15"
+)
+```
+
+Chaetal_sacs_1:
+
+```{r}
+markers_chaetal_sacs_1_genes <- c("VIE-hap1G00000003456", "VIE-hap1G00000002125", "VIE-hap1G00000026938", "VIE-hap1G00000026937", "VIE-hap1G00000026284", "VIE-hap1G00000014044")
+
+cluster_cs1 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = markers_chaetal_sacs_1_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+These are the bonafide chaetal sacs. VIE-hap1G00000014044 is extremely interesting though as a homeobox for chaetal sacs
+
+```{r}
+markers_chaetal_sacs_2_genes <- c("VIE-hap1G00000024483", "VIE-hap1G00000029476", "VIE-hap1G00000021326", "VIE-hap1G00000007637", "VIE-hap1G00000004255", "VIE-hap1G00000007671")
+
+cluster_cs2 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = markers_chaetal_sacs_2_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+This is a neuronal lineage population.
+
+```{r}
+markers_chaetal_sacs_3_genes <- c("VIE-hap1G00000023792", "VIE-hap1G00000029094", "VIE-hap1G00000014628", "VIE-hap1G00000023273", "VIE-hap1G00000031724", "VIE-hap1G00000024947", "VIE-hap1G00000023796")
+
+cluster_cs3 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = markers_chaetal_sacs_3_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+These cells are interesting. They seem to be cells with liver function. Possible Chloragogen cell.
+
+```{r}
+subcluster15_newnames <- c(
+  "Neuroprogenitors***" = "Neural_progenitor_1",
+  "Chaetal_sacs_1" = "Chaetal_sacs",
+  "Chaetal_sacs_2" = "Neural_progenitor_2",
+  "Chaetal_sacs_3" = "Pol_protein+/possible_chloragogen_cell"
+)
+
+merged_local_int$subcluster15 <- plyr::mapvalues(
+  x    = merged_local_int$subcluster_15,
+  from = names(subcluster15_newnames),
+  to   = subcluster15_newnames
+)
+
+Idents(merged_local_int) <- merged_local_int$subcluster15
+
+```
+
+```{r}
+#small_update
+subcluster15_newnames_2 <- c(
+  "Unidentified_gut_possible_gameteproducing/FHAD1+" = "a-amylase+/FHAD1+_gut",
+  "Cardiac_myocytes***ORdeveloping_striatal_muscle" = "Cardiac_myocytes",
+  "Neuronal_2*/check_upon_subcluster" = "Smooth_muscle/thrombospondin4?+",
+  "Extracellular_matrix_related_possible_neuronal_progenitor_pop" = "Extracellular_matrix_related",
+  "Eleocyte" = "Eleocyte*",
+  "Neuronal_3" = "Neuronal_2"
+)
+
+merged_local_int$subcluster15_2 <- plyr::mapvalues(
+  x    = merged_local_int$subcluster15,
+  from = names(subcluster15_newnames_2),
+  to   = subcluster15_newnames_2
+)
+
+Idents(merged_local_int) <- merged_local_int$subcluster15_2
+```
+
+Okay great!
+
+```{r}
+umap_cell_types <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  raster = F,
+  group.by = "subcluster15_2",
+  label = T,
+  repel = T
+) + 
+  guides(color = guide_legend(ncol = 1,
+         override.aes = list(size = 5)))
+```
+
+```{r}
+pdf(file = "~/desktop/overall_cell_types.pdf",
+    height = 10,
+    width = 20)
+print(umap_cell_types)
+dev.off()
+```
+
+### Finalised cell types
+
+This is getting a bit messy, but the cell types assigned are from subcluster 15. I clustered and then 15 I specifically subclustered. I then renamed the ones in 15 twice. 
+
+Here is now 15 all together so I can rename it here:
+
+```{r}
+celltypes_final <- c(
+  "hh+_population" = "hh+_population",
+  "Striated_Muscle" = "Striated_Muscle",
+  "Neuropeptigeric_neurones" = "Neuropeptigeric_neurones",
+  "Eleocyte*" = "Eleocyte*",
+  "Coelomic_Mesoderm" = "Coelomic_Mesoderm",
+  "Collar_receptor_cells" = "Collar_receptor_cells",
+  "Neuronal" = "Neuronal",
+  "Chaetal_sacs" = "Chaetal_sacs",
+  "Smooth_muscle/combinew/4" = "Smooth_muscle",
+  "Extracellular_matrix_related" = "Extracellular_matrix_related",
+  "Smooth_muscle" = "Smooth_muscle",
+  "Epidmeris" = "Epidermis",
+  "Unidentified_possible_muscle" = "Unidentified_possible_muscle",
+  "Neuronal_2" = "Neuronal_2",
+  "Neural_progenitor_1" = "NEED_TO_CHANGE",
+  "Enterocyte/mid-gut" = "Enterocyte/mid-gut",
+  "a-amylase+/FHAD1+_gut" = "a-amylase+_gut",
+  "Cardiac_myocytes" = "Cardiac_myocytes",
+  "Smooth_muscle/thrombospondin4?+" = "Odd_rx/thrombospondin+_cluster",
+  "Unidentified_2" = "Unidentified",
+  "Gata4/5/6_striatal_muscle*" = "Gata4/5/6_striatal_muscle*",
+  "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells" = "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells",
+  "Haemoglobulin-producing cells" = "Haemoglobulin-producing cells",
+  "Coelomocytes" = "Coelomocytes",
+  "Neural_progenitor_2" = "NEED_TO_CHANGE_2",
+  "SIX4+_Reelin+_unidentified" = "SIX4+_Reelin+_unidentified",
+  "Pol_protein+/possible_chloragogen_cell" = "Pol_protein+/possible_chloragogen_cell",
+  "Unidentified_3" = "Unidentified_3"
+)
+
+merged_local_int$cell_types_near_final <- plyr::mapvalues(
+  x    = merged_local_int$subcluster15_2,
+  from = names(celltypes_final),
+  to   = celltypes_final
+)
+
+Idents(merged_local_int) <- merged_local_int$cell_types_near_final
+```
+
+Okay I cleaned it as well so looks good.
+
+```{r}
+umap_cell_types <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  raster = F,
+  group.by = "cell_types_near_final",
+  label = T,
+  repel = T
+) + 
+  guides(color = guide_legend(ncol = 1,
+         override.aes = list(size = 5)))
+```
+
+
+And final final as I don't want to do this anymore.
+
+```{r}
+celltypes_final_final <- c(
+  "hh+_population" = "hh+_population",
+  "Striated_Muscle" = "Striated_Muscle",
+  "Neuropeptigeric_neurones" = "Neuropeptigeric_neurones",
+  "Eleocyte*" = "DSL-like1+-population",
+  "Coelomic_Mesoderm" = "Coelomic_Mesoderm",
+  "Collar_receptor_cells" = "Collar_receptor_cells",
+  "Neuronal" = "Neuronal",
+  "Chaetal_sacs" = "Chaetal_sacs",
+  "Smooth_muscle" = "Smooth_muscle",
+  "Extracellular_matrix_related" = "Extracellular_matrix_related",
+  "Epidermis" = "Epidermis",
+  "Unidentified_possible_muscle" = "Unidentified_possible_muscle",
+  "Neuronal_2" = "Neuronal_2",
+  "NEED_TO_CHANGE" = "FzCRD-1+_progenitor_population",
+  "Enterocyte/mid-gut" = "Enterocyte/mid-gut",
+  "a-amylase+_gut" = "a-amylase+/FHAD+_gut",
+  "Cardiac_myocytes" = "Cardiac_myocytes",
+  "Odd_rx/thrombospondin+_cluster" = "rx+_population",
+  "Unidentified" = "Unidentified",
+  "Gata4/5/6_striatal_muscle*" = "Gata4/5/6_striatal_muscle*",
+  "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells" = "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells",
+  "Haemoglobulin-producing cells" = "Haemoglobulin-producing cells",
+  "Coelomocytes" = "Coelomocytes",
+  "NEED_TO_CHANGE_2" = "PEG3+_population",
+  "SIX4+_Reelin+_unidentified" = "SIX4+_Reelin+_unidentified",
+  "Pol_protein+/possible_chloragogen_cell" = "Epidermis",
+  "Unidentified_3" = "Unidentified_2"
+)
+
+merged_local_int$cell_types_final <- plyr::mapvalues(
+  x    = merged_local_int$cell_types_near_final,
+  from = names(celltypes_final_final),
+  to   = celltypes_final_final
+)
+
+Idents(merged_local_int) <- merged_local_int$cell_types_final
+```
+
+```{r}
+umap_cell_types <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  raster = F,
+  group.by = "cell_types_final",
+  label = T,
+  repel = T
+) + 
+  guides(color = guide_legend(ncol = 1,
+         override.aes = list(size = 5)))
+```
+
+DONE!
+
+#### final check on two clusters
+
+```{r}
+markers_invest_list <- list()
+
+markers_invest_list[[1]] <- FindMarkers(
+  merged_local_int,
+  ident.1 = "NEED_TO_CHANGE",
+  group.by = "cell_types_near_final",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+
+markers_invest_list[[2]] <- FindMarkers(
+  merged_local_int,
+  ident.1 = "NEED_TO_CHANGE_2",
+  group.by = "cell_types_near_final",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+```{r}
+lookup_subsets_invest <- lapply(markers_invest_list, function(cluster_df) {
+  #Move genes to columnms
+  cluster_df$gene <- rownames(cluster_df)
+  
+  # Extract genes from this cluster
+  cluster_genes <- cluster_df$gene
+  
+  # Subset lookup table to these genes
+  subset_df <- look_up_table[look_up_table$gene %in% cluster_genes, ]
+  
+  return(subset_df)
+})
+```
+
+##### Graphing of these stupid clusters 
+
+```{r}
+#Good markers for this cluster
+invest_markers_1 <- as.character(rownames(markers_invest_list[[1]]))
+
+invest_marker_plots <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = invest_markers_1,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+#Good markers for this cluster
+invest_markers_2 <- as.character(rownames(markers_invest_list[[2]]))
+
+invest_marker_plots_2 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = invest_markers_2,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+
+```{r}
+invest_marker_plots
+```
+
+```{r}
+invest_marker_plots_2
+```
+
+
+## Cell type annotation (global)
+
+I will now take the top 30 genes per cluster for each condition and go through cluster by cluster which is which. 
+
+I have 50 clusters so let's get on with it
+
+```{r}
+look_up_table <- look_up_table |> 
+    mutate(gene = gsub("_", "-", gene))
+
+top30 <- top30 |> 
+    mutate(gene = gsub("_", "-", gene))
+
+#Subset look-up table to mny cluster marker genes
+top30 <- top30 |> 
+    inner_join(look_up_table, by = "gene") 
+```
+
+Also producing a wider list of markers
+
+```{r}
+lookup_subsets <- lapply(all_markers, function(cluster_df) {
+  #Move genes to columnms
+  cluster_df$gene <- rownames(cluster_df)
+  
+  # Extract genes from this cluster
+  cluster_genes <- cluster_df$gene
+  
+  # Subset lookup table to these genes
+  subset_df <- look_up_table[look_up_table$gene %in% cluster_genes, ]
+  
+  return(subset_df)
+})
+```
+
+
+### Cluster 1
+
+```{r}
+cluster1_markers <- top30 |> 
+  filter(cluster_id == "1")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster1_markers)
+```
+Here there are only 4 marker genes. Look up table says
+
+1. ccdc134-like: general cell proliferation marker and related to immune function. This is the strongeset fold change
+2. snu13: ribsomal related gene expressed in proliferating stem cells 
+3. rps6: Ribosomal subunit
+4. ncdn: Neuro related gene involved in synaptic release. Could be neuroectoderm related?
+
+Overall, these are likely proliferating stem cells and we can look how other genes are potentially expressed here.
+
+### Cluster 2
+
+```{r}
+cluster2_markers <- top30 |> 
+  filter(cluster_id == "2")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster2_markers)
+```
+
+These proteins are related to neuronal lineages. Name a few, hox5, neuerexin, various glutamate receptors
+
+Assigning "neural_progenitors"
+
+### Cluster 3
+
+```{r}
+cluster3_markers <- top30 |> 
+  filter(cluster_id == "3")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster3_markers)
+```
+
+I'm going to stop listing these proteins as they are above.
+
+Mostly, this cluster is related to muscle cells with various muscle markers, but also some immune cell markers. There is calponin-2 (calponin family involved in actin cytoskeleton regulation), troponin T and I (key regulators of striated muscle contraction), multiple myosin subunits (heavy chain, regulatory and essential light chains), paramyosin, tropomyosin, and twitchin.
+
+Assigning "striated_muscle"
+
+### Cluster 4
+
+```{r}
+cluster4_markers <- top30 |> 
+  filter(cluster_id == "4")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster4_markers)
+
+cluster4_markers_genes <- top30 |> 
+  filter(cluster_id == "4") |> 
+  select(gene)
+
+cluster4_markers_genes <- as.character(cluster4_markers_genes[[1]])
+```
+
+This has genes related to DNA repair/regulation enzymes (PARP14), signaling scaffolds (ankyrin repeat proteins), apoptosis-regulating but regeneration-supporting proteases (caspase-7), molecular chaperones (HSP70), and cell surface glycoproteins (PSGP). However, looking beyond the top genes we get some other genes like PRDM1B but also neurofilament protein
+
+Possible wound-response population/general stem cell population.
+
+Plotting those genes to see how clustered they are
+
+```{r}
+cluster4_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster4_markers_genes
+  )
+```
+
+### Cluster 5
+
+```{r}
+cluster5_markers <- top30 |> 
+  filter(cluster_id == "5")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster5_markers)
+
+cluster5_markers_genes <- top30 |> 
+  filter(cluster_id == "5") |> 
+  select(gene)
+
+cluster5_markers_genes <- as.character(cluster5_markers_genes[[1]])
+```
+
+Has the col6a6, but not the one that Alex uploaded. This is a hit to human col6a6. Most interesting one is neurotrypsin. Most interesting one is neurotrypsin but also a dorsal ventral patterning protein.
+
+Assigning "epidermis"
+
+```{r}
+cluster5_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000014628",
+    raster = F,
+    order = T
+  ) +
+  ggtitle("Dorsal-ventral patterning tolloid-like protein 1 - VIE-hap1G00000014628")
+
+cluster5_markers_plot
+```
+Overall, this might be involved in dorsal ventral patterning but it's not co-expressed with any BMPs so I am hesitant to label it this.
+
+### Cluster 6
+
+```{r}
+cluster6_markers <- top30 |> 
+  filter(cluster_id == "6")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster6_markers)
+
+cluster6_markers_genes <- top30 |> 
+  filter(cluster_id == "6") |> 
+  select(gene)
+
+cluster6_markers_genes <- as.character(cluster6_markers_genes[[1]])
+```
+
+Mostly an epidermal protein. Likely epidermis. Main marker is unknown.
+
+```{r}
+cluster6_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster6_markers_genes
+  )
+
+cluster6_markers_plot
+```
+
+### Cluster 7
+
+```{r}
+cluster7_markers <- top30 |> 
+  filter(cluster_id == "7")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster7_markers)
+
+cluster7_markers_genes <- top30 |> 
+  filter(cluster_id == "7") |> 
+  select(gene)
+
+cluster7_markers_genes <- as.character(cluster7_markers_genes[[1]])
+```
+
+Most critcally has von Willebrand factor D and EGF domain-containing protein which is a marker for blastemal cells.
+ 
+```{r}
+cluster7_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster7_markers_genes
+  )
+
+cluster7_markers_plot
+```
+
+### Cluster 8
+
+```{r}
+cluster8_markers <- top30 |> 
+  filter(cluster_id == "8")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster8_markers)
+
+cluster8_markers_genes <- top30 |> 
+  filter(cluster_id == "8") |> 
+  select(gene)
+
+cluster8_markers_genes <- as.character(cluster8_markers_genes[[1]])
+```
+
+```{r}
+cluster8_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster8_markers_genes
+  )
+
+cluster8_markers_plot
+```
+
+Mostly, immune cell related markers in macrophages. There are also WNT signalling proteins.
+
+### Cluster 9
+
+```{r}
+cluster9_markers <- top30 |> 
+  filter(cluster_id == "9")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster9_markers)
+
+cluster9_markers_genes <- top30 |> 
+  filter(cluster_id == "9") |> 
+  select(gene)
+
+cluster9_markers_genes <- as.character(cluster9_markers_genes[[1]])
+```
+
+```{r}
+cluster9_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster9_markers_genes
+  )
+
+cluster9_markers_plot
+```
+
+### Cluster 10
+
+```{r}
+cluster10_markers <- top30 |> 
+  filter(cluster_id == "10")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster10_markers)
+
+cluster10_markers_genes <- top30 |> 
+  filter(cluster_id == "10") |> 
+  select(gene)
+
+cluster10_markers_genes <- as.character(cluster10_markers_genes[[1]])
+```
+
+```{r}
+cluster10_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster10_markers_genes
+  )
+
+cluster10_markers_plot
+```
+
+### Cluster 11
+
+```{r}
+cluster11_markers <- top30 |> 
+  filter(cluster_id == "11")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster11_markers)
+
+cluster11_markers_genes <- top30 |> 
+  filter(cluster_id == "11") |> 
+  select(gene)
+
+cluster11_markers_genes <- as.character(cluster11_markers_genes[[1]])
+```
+
+```{r}
+cluster11_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster11_markers_genes
+  )
+
+cluster11_markers_plot
+```
+Most definite marker proteins are returned with no similarity.
+
+### Cluster 12
+
+```{r}
+cluster12_markers <- top30 |> 
+  filter(cluster_id == "12")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster12_markers)
+
+cluster12_markers_genes <- top30 |> 
+  filter(cluster_id == "12") |> 
+  select(gene)
+
+cluster12_markers_genes <- as.character(cluster12_markers_genes[[1]])
+```
+
+```{r}
+cluster12_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster12_markers_genes
+  )
+
+cluster12_markers_plot
+```
+
+Most have no similarity, but there is MUC6 in there suggesting support for gastric cells. 
+
+Could be combined with 11.
+
+### Cluster 13
+
+```{r}
+cluster13_markers <- top30 |> 
+  filter(cluster_id == "13")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster13_markers)
+
+cluster13_markers_genes <- top30 |> 
+  filter(cluster_id == "13") |> 
+  select(gene)
+
+cluster13_markers_genes <- as.character(cluster13_markers_genes[[1]])
+```
+
+```{r}
+cluster13_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster13_markers_genes
+  )
+
+cluster13_markers_plot
+```
+Potential germline cells. Proteins related to reproduction. Unlikely in this context however. Other markers are related to muscles.
+
+### Cluster 14
+
+```{r}
+cluster14_markers <- top30 |> 
+  filter(cluster_id == "14")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster14_markers)
+
+cluster14_markers_genes <- top30 |> 
+  filter(cluster_id == "14") |> 
+  select(gene)
+
+cluster14_markers_genes <- as.character(cluster14_markers_genes[[1]])
+```
+
+```{r}
+cluster14_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster14_markers_genes
+  )
+
+cluster14_markers_plot
+```
+
+These markers aren't really distinct to that cluster so looking at others.
+
+```{r}
+
+cluster14_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000020498",
+    raster = F,
+    order = T
+  )
+
+cluster14_markers_plot 
+```
+
+Potential heterogeneus population of neurones and muscle cells. 
+
+There is a good amount of wnt4 expression here though.
+
+### Cluster 15
+
+```{r}
+cluster15_markers <- top30 |> 
+  filter(cluster_id == "15")  |> 
+  select(gene, avg_fc, protein_prediction)
+print(cluster15_markers)
+
+cluster15_markers_genes <- top30 |> 
+  filter(cluster_id == "15") |> 
+  select(gene)
+
+cluster15_markers_genes <- as.character(cluster15_markers_genes[[1]])
+```
+
+```{r}
+cluster15_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster15_markers_genes
+  )
+
+cluster15_markers_plot
+```
+
+These markers aren't really distinct to that cluster so looking at others.
+
+```{r}
+cluster15_markers_retinal_homeobox<- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000011315",
+    raster = F,
+    order = T
+  )
+
+cluster15_markers_retinal_homeobox
+```
+
+### Cluster 16
+
+```{r}
+cluster16_markers <- top30 |> 
+  filter(cluster_id == "16")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster16_markers)
+
+cluster16_markers_genes <- top30 |> 
+  filter(cluster_id == "16") |> 
+  select(gene)
+
+cluster16_markers_genes <- as.character(cluster16_markers_genes[[1]])
+```
+
+```{r}
+cluster16_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster16_markers_genes
+  )
+```
+
+Hmm mostly stem cells markers and also neuronal markers, specifcally MOXD1. This has been shown to be a marker for mesenchymal stem cells
+
+### Cluster 17
+
+```{r}
+cluster17_markers <- top30 |> 
+  filter(cluster_id == "17")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster17_markers)
+
+cluster17_markers_genes <- top30 |> 
+  filter(cluster_id == "17") |> 
+  select(gene)
+
+cluster17_markers_genes <- as.character(cluster17_markers_genes[[1]])
+```
+
+```{r}
+cluster17_acetylcholine <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features ="VIE-hap1G00000002586",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+cluster17_delta <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features ="VIE-hap1G00000025691",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+
+Hmm mostly neuronal and cholinergic markers. There is also a good I am tentatively assigning "Delta+ cholinergic neural precursors"
+
+### Cluster 18
+
+```{r}
+cluster18_markers <- top30 |> 
+  filter(cluster_id == "18")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster18_markers)
+
+cluster18_markers_genes <- top30 |> 
+  filter(cluster_id == "18") |> 
+  select(gene)
+
+cluster18_markers_genes <- as.character(cluster18_markers_genes[[1]])
+```
+
+```{r}
+cluster18_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000031647",
+    raster = F,
+    order = T
+  )
+```
+
+The markers which returned were not that good, but I know this is the Hox3+ stem cells.
+
+### Cluster 19
+
+```{r}
+cluster19_markers <- top30 |> 
+  filter(cluster_id == "19")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster19_markers)
+
+cluster19_markers_genes <- top30 |> 
+  filter(cluster_id == "19") |> 
+  select(gene)
+
+cluster19_markers_genes <- as.character(cluster19_markers_genes[[1]])
+```
+
+```{r}
+cluster19_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000001662",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+The markers for LEQ neuropeptide etc are interesting. However, these co-localise with nk2.2 expression. Perhaps it is best to merge this with other clusters.
+
+I will marker these "Peptidergic/Neurosecretory_neurones" for the moment.
+
+### Cluster 20
+
+```{r}
+cluster20_markers <- top30 |> 
+  filter(cluster_id == "20")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster20_markers)
+
+cluster20_markers_genes <- top30 |> 
+  filter(cluster_id == "20") |> 
+  select(gene)
+
+cluster20_markers_genes <- as.character(cluster20_markers_genes[[1]])
+```
+
+```{r}
+cluster20_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000022132",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+There are no specific markers for this cluster. I think it  can be combined with 6.
+
+### Cluster 21
+
+```{r}
+cluster21_markers <- top30 |> 
+  filter(cluster_id == "21")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster21_markers)
+
+cluster21_markers_genes <- top30 |> 
+  filter(cluster_id == "21") |> 
+  select(gene)
+
+cluster21_markers_genes <- as.character(cluster21_markers_genes[[1]])
+```
+
+```{r}
+cluster21_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster21_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+I know these are progenitor neurones, but what differentiates it from 49. I think its this 	
+VIE-hap1G00000002997 or Craniofacial development protein 2 predicted. This is a gene duplication of Bucentar Protein. Perhaps this is a better identification given the evolutionary distance.
+
+Also Follistatin-related protein 5 which is "Predicted to be involved in cell differentiation and regulation of BMP signaling pathway"
+
+
+```{r}
+cluster21_marker_specific <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000002997",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+cluster21_marker_ <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000007610",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+I am going to assign this a name related to those proteins
+
+### Cluster 22
+
+```{r}
+cluster22_markers <- top30 |> 
+  filter(cluster_id == "22")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster22_markers)
+
+cluster22_markers_genes <- top30 |> 
+  filter(cluster_id == "22") |> 
+  select(gene)
+
+cluster22_markers_genes <- as.character(cluster22_markers_genes[[1]])
+```
+
+```{r}
+cluster22_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster22_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+I don't really see any descrete expression pattern to these markers which are not realted to the global structure. I'm thinking of combining 11,12,8 & 22 before maybe subclustering it.
+
+### Cluster 23
+
+```{r}
+cluster23_markers <- top30 |> 
+  filter(cluster_id == "23")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster23_markers)
+
+cluster23_markers_genes <- top30 |> 
+  filter(cluster_id == "23") |> 
+  select(gene)
+
+cluster23_markers_genes <- as.character(cluster23_markers_genes[[1]])
+```
+
+```{r}
+cluster23_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster23_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+
+```{r}
+cluster23_kremen <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000023721",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+I would say that VIE-hap1G00000023721 which is potentially predicted to be kremen is a marker for this cluster. This along with some of the signals I saw earlier with Bucentar_protein FRP5, could point to this being an important neuronal cluster.
+
+Kremen is a protein associated with Limb development and specifically the apical ectodermal ridge
+
+### Cluster 24
+
+```{r}
+cluster24_markers <- top30 |> 
+  filter(cluster_id == "24")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster24_markers)
+
+cluster24_markers_genes <- top30 |> 
+  filter(cluster_id == "24") |> 
+  select(gene)
+
+cluster24_markers_genes <- as.character(cluster24_markers_genes[[1]])
+```
+
+```{r}
+cluster24_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster24_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Due to the presence of spondin this could be part of the floor plate. However, it might also have patched. I also want to get shh but it's not currently annotated.
+
+It does have wnt6 potentially and also wntless to some extent
+
+### Cluster 25
+
+```{r}
+cluster25_markers <- top30 |> 
+  filter(cluster_id == "25")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster25_markers)
+
+cluster25_markers_genes <- top30 |> 
+  filter(cluster_id == "25") |> 
+  select(gene)
+
+cluster25_markers_genes <- as.character(cluster25_markers_genes[[1]])
+```
+
+```{r}
+cluster25_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster25_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+### Cluster 26
+
+```{r}
+cluster26_markers <- top30 |> 
+  filter(cluster_id == "26")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster26_markers)
+
+cluster26_markers_genes <- top30 |> 
+  filter(cluster_id == "26") |> 
+  select(gene)
+
+cluster26_markers_genes <- as.character(cluster26_markers_genes[[1]])
+```
+
+```{r}
+cluster26_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster26_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Pax6 baby. Also no other particular markers though.
+
+### Cluster 27
+
+```{r}
+cluster27_markers <- top30 |> 
+  filter(cluster_id == "27")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster27_markers)
+
+cluster27_markers_genes <- top30 |> 
+  filter(cluster_id == "27") |> 
+  select(gene)
+
+cluster27_markers_genes <- as.character(cluster27_markers_genes[[1]])
+```
+
+```{r}
+cluster27_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster27_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Lots of genes related to ribosomes and these have a high UMI count so likely the hypertranscriptomic cells.
+
+### Cluster 28
+
+```{r}
+cluster28_markers <- top30 |> 
+  filter(cluster_id == "28")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster28_markers)
+
+cluster28_markers_genes <- top30 |> 
+  filter(cluster_id == "28") |> 
+  select(gene)
+
+cluster28_markers_genes <- as.character(cluster28_markers_genes[[1]])
+```
+
+```{r}
+cluster28_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster28_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Lots of genes related to ribosomes and these have a high UMI count so likely the hypertranscriptomic cells.
+
+### Cluster 28
+
+```{r}
+cluster28_markers <- top30 |> 
+  filter(cluster_id == "28")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster28_markers)
+
+cluster28_markers_genes <- top30 |> 
+  filter(cluster_id == "28") |> 
+  select(gene)
+
+cluster28_markers_genes <- as.character(cluster28_markers_genes[[1]])
+```
+
+```{r}
+cluster28_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster28_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Only real marker here is CD63, but this is related to vesicles. There is "notch" and some other neuronally related markers here like Serine/threonine-protein kinase DCLK3 which is related to chromatin remodelling in neurones.
+
+### Cluster 29
+
+```{r}
+cluster29_markers <- top30 |> 
+  filter(cluster_id == "29")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster29_markers)
+
+cluster29_markers_genes <- top30 |> 
+  filter(cluster_id == "29") |> 
+  select(gene)
+
+cluster29_markers_genes <- as.character(cluster29_markers_genes[[1]])
+```
+
+```{r}
+cluster29_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster29_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Combine with 7.
+
+### Cluster 30
+
+```{r}
+cluster30_markers <- top30 |> 
+  filter(cluster_id == "30")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster30_markers)
+
+cluster30_markers_genes <- top30 |> 
+  filter(cluster_id == "30") |> 
+  select(gene)
+
+cluster30_markers_genes <- as.character(cluster30_markers_genes[[1]])
+```
+
+```{r}
+cluster30_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster30_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Combine with 13. Striated muscle.
+
+### Cluster 31
+
+```{r}
+cluster31_markers <- top30 |> 
+  filter(cluster_id == "31")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster31_markers)
+
+cluster31_markers_genes <- top30 |> 
+  filter(cluster_id == "31") |> 
+  select(gene)
+
+cluster31_markers_genes <- as.character(cluster31_markers_genes[[1]])
+```
+
+```{r}
+cluster31_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster31_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Definitely a neuroscetory cluster
+
+### Cluster 32
+
+```{r}
+cluster32_markers <- top30 |> 
+  filter(cluster_id == "32")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster32_markers)
+
+cluster32_markers_genes <- top30 |> 
+  filter(cluster_id == "32") |> 
+  select(gene)
+
+cluster32_markers_genes <- as.character(cluster32_markers_genes[[1]])
+```
+
+```{r}
+cluster32_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster32_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Hmm, no real identifiers and a very mixed bag. Although it is consistently separate so I'm inclined to think this is a real cluster. However, I have a suspicion that that this is potentially driven by cell-cycling genes.
+
+Seems to mostly be muscle related.
+
+### Cluster 33
+
+```{r}
+cluster33_markers <- top30 |> 
+  filter(cluster_id == "33")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster33_markers)
+
+cluster33_markers_genes <- top30 |> 
+  filter(cluster_id == "33") |> 
+  select(gene)
+
+cluster33_markers_genes <- as.character(cluster33_markers_genes[[1]])
+```
+
+```{r}
+cluster33_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster33_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Combine with 19
+
+### Cluster 34
+
+```{r}
+cluster34_markers <- top30 |> 
+  filter(cluster_id == "34")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster34_markers)
+
+cluster34_markers_genes <- top30 |> 
+  filter(cluster_id == "34") |> 
+  select(gene)
+
+cluster34_markers_genes <- as.character(cluster34_markers_genes[[1]])
+```
+
+```{r}
+cluster34_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster34_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Unidentified protein drives this cluster.
+
+### Cluster 35
+
+```{r}
+cluster35_markers <- top30 |> 
+  filter(cluster_id == "35")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster35_markers)
+
+cluster35_markers_genes <- top30 |> 
+  filter(cluster_id == "35") |> 
+  select(gene)
+
+cluster35_markers_genes <- as.character(cluster35_markers_genes[[1]])
+```
+
+```{r}
+cluster35_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster35_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Neuroglian and Low-density lipoprotein receptor-related protein 5 point to neuronal lineage, but not expresssion of wnts (or at least annotated wnts) with this co-receptor.
+
+### Cluster 36
+
+```{r}
+cluster36_markers <- top30 |> 
+  filter(cluster_id == "36")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster36_markers)
+
+cluster36_markers_genes <- top30 |> 
+  filter(cluster_id == "36") |> 
+  select(gene)
+
+cluster36_markers_genes <- as.character(cluster36_markers_genes[[1]])
+```
+
+```{r}
+cluster36_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster36_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Ah now this has an extremely restricted expression of it's markers. hemocytes/macrophage-like cells
+
+### Cluster 37
+
+```{r}
+cluster37_markers <- top30 |> 
+  filter(cluster_id == "37")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster37_markers)
+
+cluster37_markers_genes <- top30 |> 
+  filter(cluster_id == "37") |> 
+  select(gene)
+
+cluster37_markers_genes <- as.character(cluster37_markers_genes[[1]])
+```
+
+```{r}
+cluster37_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster37_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Ah now this has an extremely restricted expression of it's markers.
+
+### Cluster 38
+
+```{r}
+cluster38_markers <- top30 |> 
+  filter(cluster_id == "38")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster38_markers)
+
+cluster38_markers_genes <- top30 |> 
+  filter(cluster_id == "38") |> 
+  select(gene)
+
+cluster38_markers_genes <- as.character(cluster38_markers_genes[[1]])
+```
+
+```{r}
+cluster38_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster38_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Ah now this is related to a bioariv paper and lots of extracellular globins come up. Another paper named these hemo-globin-producing cells
+
+### Cluster 39
+
+```{r}
+cluster39_markers <- top30 |> 
+  filter(cluster_id == "39")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster39_markers)
+
+cluster39_markers_genes <- top30 |> 
+  filter(cluster_id == "39") |> 
+  select(gene)
+
+cluster39_markers_genes <- as.character(cluster39_markers_genes[[1]])
+```
+
+```{r}
+cluster39_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster39_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+We have lots of immune related genes but principally CD22 which are a marker of Coelomocytes in invertebrates.
+
+### Cluster 40
+
+```{r}
+cluster40_markers <- top30 |> 
+  filter(cluster_id == "40")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster40_markers)
+
+cluster40_markers_genes <- top30 |> 
+  filter(cluster_id == "40") |> 
+  select(gene)
+
+cluster40_markers_genes <- as.character(cluster40_markers_genes[[1]])
+```
+
+```{r}
+cluster40_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster40_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Here there is strong expression of col4 and multiple SVEP1 genes which suggest a mesenchymal stromal cell. Likely originate from the mesoderm though.
+
+### Cluster 41
+
+```{r}
+cluster41_markers <- top30 |> 
+  filter(cluster_id == "41")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster41_markers)
+
+cluster41_markers_genes <- top30 |> 
+  filter(cluster_id == "41") |> 
+  select(gene)
+
+cluster41_markers_genes <- as.character(cluster41_markers_genes[[1]])
+```
+
+```{r}
+cluster41_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster41_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Here there is LINE-1 and also laminins associated with neural progenitors.
+
+### Cluster 42
+
+```{r}
+cluster42_markers <- top30 |> 
+  filter(cluster_id == "42")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster42_markers)
+
+cluster42_markers_genes <- top30 |> 
+  filter(cluster_id == "42") |> 
+  select(gene)
+
+cluster42_markers_genes <- as.character(cluster42_markers_genes[[1]])
+```
+
+```{r}
+cluster42_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster42_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Has several markers associated to cilia. Potentially ciliated epithelial cells
+
+### Cluster 43
+
+```{r}
+cluster43_markers <- top30 |> 
+  filter(cluster_id == "43")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster43_markers)
+
+cluster43_markers_genes <- top30 |> 
+  filter(cluster_id == "43") |> 
+  select(gene)
+
+cluster43_markers_genes <- as.character(cluster43_markers_genes[[1]])
+```
+
+```{r}
+cluster43_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster43_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Potential overcluster, but maybe an acutely hypoxic cell type. Maybe artefact
+
+### Cluster 44
+
+```{r}
+cluster44_markers <- top30 |> 
+  filter(cluster_id == "44")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster44_markers)
+
+cluster44_markers_genes <- top30 |> 
+  filter(cluster_id == "44") |> 
+  select(gene)
+
+cluster44_markers_genes <- as.character(cluster44_markers_genes[[1]])
+```
+
+```{r}
+cluster44_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster44_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Chiefly, there are two hits for PEG3, which is likely a stem cell marker
+
+### Cluster 45
+
+```{r}
+cluster45_markers <- top30 |> 
+  filter(cluster_id == "45")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster45_markers)
+
+cluster45_markers_genes <- top30 |> 
+  filter(cluster_id == "45") |> 
+  select(gene)
+
+cluster45_markers_genes <- as.character(cluster45_markers_genes[[1]])
+```
+
+```{r}
+cluster45_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster45_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Most striking is integrin alpha 8 expression which has been linked to axons on neurones. Perhaps these are projecting neurones. Otherwise has no similarity
+
+### Cluster 46
+
+```{r}
+cluster46_markers <- top30 |> 
+  filter(cluster_id == "46")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster46_markers)
+
+cluster46_markers_genes <- top30 |> 
+  filter(cluster_id == "46") |> 
+  select(gene)
+
+cluster46_markers_genes <- as.character(cluster46_markers_genes[[1]])
+```
+
+```{r}
+cluster46_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster46_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+There are a lot of neuronal marker genes including slit, hedgehog, and frizzled.
+
+### Cluster 47
+
+```{r}
+cluster47_markers <- top30 |> 
+  filter(cluster_id == "47")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster47_markers)
+
+cluster47_markers_genes <- top30 |> 
+  filter(cluster_id == "47") |> 
+  select(gene)
+
+cluster47_markers_genes <- as.character(cluster47_markers_genes[[1]])
+```
+
+```{r}
+cluster47_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster47_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+More striated muscle. Could be combined with 3. Maybe call this differntiating striatal muscle
+
+### Cluster 48
+
+```{r}
+cluster48_markers <- top30 |> 
+  filter(cluster_id == "48")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster48_markers)
+
+cluster48_markers_genes <- top30 |> 
+  filter(cluster_id == "48") |> 
+  select(gene)
+
+cluster48_markers_genes <- as.character(cluster48_markers_genes[[1]])
+```
+
+```{r}
+cluster48_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster48_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Unidentified, maybe combine
+
+### Cluster 49
+
+```{r}
+cluster49_markers <- top30 |> 
+  filter(cluster_id == "49")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster49_markers)
+
+cluster49_markers_genes <- top30 |> 
+  filter(cluster_id == "49") |> 
+  select(gene)
+
+cluster49_markers_genes <- as.character(cluster49_markers_genes[[1]])
+```
+
+```{r}
+cluster49_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster49_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Really not sure which cells these are. Definite overcluster.
+
+### Cluster 50
+
+```{r}
+cluster50_markers <- top30 |> 
+  filter(cluster_id == "50")  |> 
+  select(gene, avg_fc, protein_prediction)
+View(cluster50_markers)
+
+cluster50_markers_genes <- top30 |> 
+  filter(cluster_id == "50") |> 
+  select(gene)
+
+cluster50_markers_genes <- as.character(cluster50_markers_genes[[1]])
+```
+
+```{r}
+cluster50_markers_plot <- merged_int_global |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = cluster50_markers_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Multiciliated epithelia maybe based on marker genes, but I'm not confident they're specific.
+
+### Cell type assignment from first pass
+
+```{r}
+cluster2celltype_global <- c(
+  "1" = "Proliferating_stem_cells/neuroectoderm,maybe",
+  "2" = "Neural_progenitors",
+  "3" = "Striated_Muscle",
+  "4" = "stem_cell*",
+  "5" = "Neuroectoderm_d_v_patterning*",
+  "6" = "Epidermis/unidentifed_subtype",
+  "7" = "Vwde+_Blastemal_cells",
+  "8" = "macrophage/wnt_signalling_cells",
+  "9" = "Connective_tissue/ECM_rich",
+  "10" = "Gut_related/unidentified",
+  "11" = "Unidentified",
+  "12" = "Mucus_secreting_cells/Gastric*",
+  "13" = "Striated_muscle_2",
+  "14" = "Neurones/muscles",
+  "15" = "Retinal_homeobox+,spondin+_cells",
+  "16" = "Mesenchymal_stem_cells",
+  "17" = "Delta+_cholinergic_neural_precursors",
+  "18" = "Hox3+_ectoderm-derived_PSCs",
+  "19" = "Peptidergic/Neurosecretory_neurones",
+  "20" = "Possible_overcluster",
+  "21" = "Bucentar_protein+/FRP5+_neuronal_cells",
+  "22" = "Possible_overcluster_combine11,12,8,22?",
+  "23" = "Kremen+_neuroectoderm_cells",
+  "24" = "Potential_floor_plate?_need_shh",
+  "25" = "Unidentified_2",
+  "26" = "Pax6+_neural_progenitors",
+  "27" = "Hypertranscriptomic_PSCs",
+  "28" = "Possible_neurogenic_cluster",
+  "29" = "combine_with_7",
+  "30" = "combine_with_13,striated_muscle",
+  "31" = "vasotocin-neurophysin_neurosecretory_cells",
+  "32" = "muscle,potential_artifact_from_cell_cycling_gene",
+  "33" = "combine_with_19",
+  "34" = "Unidentified_3",
+  "35" = "neuroglia+_glia/neurone",
+  "36" = "Fibroblasts (Mesenchymal*)",
+  "37" = "Hemocytes/macrophage-like_cells",
+  "38" = "Haemoglobin-producing_cells",
+  "39" = "Coelomocytes",
+  "40" = "stromal_cells",
+  "41" = "neural_progenitors",
+  "42" = "ciliated_epithelial_cells",
+  "43" = "Possible_overcluser_or_hypoxic_cells",
+  "44" = "PEG3+_stem_cells",
+  "45" = "Ita8+_neurones",
+  "46" = "Potential_neuronal_lineage",
+  "47" = "Striatal_muscle_combine_with_others?",
+  "48" = "Unidentified_4",
+  "49" = "Pax6+_neural_progenitors",
+  "50" = "Ciliated_epithelia_2"
+)
+```
+
+Okay, that's the end of it. Though I'm not sure on some of these. I might use findallmarkers and then see how it compares to get more cluster specific markers. 
+
+```{r}
+
+leonie_genes <- c("VIE-hap1G00000000370", "VIE-hap1G00000005398", "VIE-hap1G00000004208", "VIE-hap1G00000021344", "VIE-hap1G00000021712", "VIE-hap1G00000021601")
+
+clustering_feature_plot <- merged_unintegrated |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = leonie_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+
+```
+
+## epig1 plots
+
+```{r}
+epig1_genes <- c("VIE-hap1G00000011048", "VIE-hap1G00000016915", "VIE-hap1G00000016918", "VIE-hap1G00000016919", "VIE-hap1G00000016920", "VIE-hap1G00000016923", "VIE-hap1G00000016925", "VIE-hap1G00000016926")
+```
+
+
+```{r}
+cluster_epig1 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = epig1_genes,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+pdf(file = "~/desktop/epig1_plots.pdf",
+    height = 24,
+    width = 48)
+print(cluster_epig1)
+dev.off()
+```
+
+## Nested genes plot
+
+Platynereis dumerilii Choline O-acetyltransferase (CHat), mRNA = VIE-hap1G00000007713
+
+

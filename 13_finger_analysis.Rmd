@@ -1,0 +1,309 @@
+# Technical or not?
+
+There are a few "fingers" in the data where cell split by their timepoint. I want to see what differs between these fingers at these timepoints.
+
+I will also assess the final thing I wanted to consider which was 336 hour versus uninjured tail and whether these were the same or whether there is still a transcriptomic difference here.
+
+## Extracting the fingers.
+
+Okay I haven't really found any "scientific" way to do this, but I'm going to give this a go manually.
+
+```{r}
+library(plotly)
+```
+
+```{r}
+finger_cells_coelomic_mesoderm <- CellSelector(umap_cell_types)
+```
+Okay cellselector only allows me to use boxes which sucks ass.
+
+I've changed my strategy and I'm trying to use cellxgene for which I need an anndata object.
+
+```{r}
+library(scCustomize)
+library(reticulate)
+
+py_require("anndata")
+```
+
+```{r}
+as.anndata(
+    x = merged_local_int,
+    file_path = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/",
+    file_name = "merged_local_int.h5ad",
+    assay = "SCT",
+    main_layer = "data",
+    other_layers = NULL
+  )
+```
+
+Wow that worked weirdly well. Reading back in the annotation I made and adding it to the meta data.
+
+```{r}
+finger_annotation <- read_csv("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/finger_annotation.csv")
+
+finger_annotation <- finger_annotation |> 
+  remove_rownames() |> 
+  column_to_rownames(var = "cells")
+
+```
+
+```{r}
+merged_local_int <- AddMetaData(
+  object = merged_local_int,
+  metadata = finger_annotation
+)
+```
+
+I'm amazed, that's so stupid but works.
+
+```{r}
+umap_chemistry <- DimPlot(
+  merged_local_int,
+  group.by = "chemistry",
+  raster = F,
+  shuffle = T
+)
+```
+
+
+```{r}
+neurone_diff <- FindMarkers(
+  merged_local_int,
+  ident.1 = "neurone_left",
+  ident.2 = "neurone_right",
+  group.by = "fingers",
+  min.pct = 0.2,
+  min.diff.pct = 0.2,
+  logfc.threshold = 1
+)
+```
+
+```{r}
+#platygenesfrom findmarkers
+neurone_diff_markers <- rownames(neurone_diff)
+
+neurone_diff_umap <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = neurone_diff_markers,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+```
+
+Couldn't really see anything.
+
+```{r}
+cm_fingers <- c(
+  "CM_bottom_finger",
+  "CM_middle_bottom_finger",
+  "CM_middle_top_finger",
+  "CM_top_finger"
+)
+
+Idents(merged_local_int) <- "fingers"
+
+# Subset object to CM fingers only (optional but cleaner)
+cm_obj <- subset(merged_local_int, idents = cm_fingers)
+
+cm_markers <- FindAllMarkers(
+  cm_obj,
+  logfc.threshold = 1,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  recorrect_umi = F
+)
+```
+
+That is more fruitful, but I cannot be asked to change this.
+
+```{r}
+markers_fingers <- rownames(cm_markers)
+
+umap_finger_markers <- FeaturePlot(
+  merged_local_int,
+  features = markers_fingers,
+  reduction = "umap",
+  order = T,
+  raster = F,
+  combine = F,
+  stroke.size = 0.8
+)
+```
+
+```{r}
+umap_finger_markers
+```
+
+Potential interesting ones:
+
+```{r}
+interesting_markers <- c("VIE-hap1G00000014567", "VIE-hap1G00000027828", "VIE-hap1G00000016113", "VIE-hap1G00000029739", "VIE-hap1G00000009510")
+```
+
+```{r}
+umap_interesting_markers <- FeaturePlot(
+  merged_local_int,
+  features = interesting_markers,
+  order = T,
+  raster = F,
+  combine = F,
+  stroke.size = 0.8
+)
+```
+
+```{r}
+umap_interesting_markers_shuffle <- FeaturePlot(
+  merged_local_int,
+  features = interesting_markers,
+  raster = F,
+  combine = F,
+  stroke.size = 0.8
+)
+```
+
+```{r}
+print(umap_interesting_markers)
+```
+
+```{r}
+umap_interesting_markers_shuffle
+```
+
+Okay. There is technically no way to tell whether these genes separate into the chemistries. This is the only way I can truly compare.
+
+```{r}
+hpa_72 <- c(
+  "72_hpa_segment_regen_3",
+  "72_hpa_segment_regen_2",
+  "72_hpa_segment_regen_1"
+)
+
+Idents(merged_local_int) <- "orig.ident"
+
+# Subset object to CM fingers only (optional but cleaner)
+obj_72 <- subset(merged_local_int, idents = hpa_72)
+```
+
+Let's look at them.
+
+```{r}
+umap_chemistry_72 <- DimPlot(
+  obj_72,
+  group.by = "chemistry",
+  raster = F,
+  shuffle = T
+)
+umap_sample <- DimPlot(
+  obj_72,
+  group.by = "orig.ident",
+  raster = F,
+  shuffle = T
+)
+```
+
+```{r}
+umap_72_interesting <- FeaturePlot(
+  obj_72,
+  features = interesting_markers,
+  order = T,
+  raster = F,
+  split.by = "chemistry",
+  stroke.size = 0.8
+)
+```
+
+```{r}
+umap_72_interesting
+```
+Okay there are two genes that split on
+
+```{r}
+pdf(file = "~/desktop/finger_plot.pdf",
+    height = 8,
+    width = 14)
+print(umap_fingers)
+dev.off()
+```
+
+Other interesting markers for neuronal:
+
+VIE-hap1G00000017068
+VIE-hap1G00000009926
+VIE-hap1G00000010866
+VIE-hap1G00000008185
+VIE-hap1G00000020779
+VIE-hap1G00000010242
+
+```{r}
+n_p_mark <- c("VIE-hap1G00000017068", "VIE-hap1G00000009926", "VIE-hap1G00000010866", "VIE-hap1G00000008185", "VIE-hap1G00000020779","VIE-hap1G00000010242")
+
+neuronal_potential_markers <- FeaturePlot(
+  merged_local_int,
+  features = n_p_mark,
+  order = T,
+  raster = F,
+  stroke.size = 0.8,
+  combine = F
+)
+```
+
+NAH
+
+Okay print off the two markers
+
+```{r}
+umap_neuronal_1 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000028909",
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+
+umap_neuronal_2 <- merged_local_int |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000023338",
+    raster = F,
+    order = T
+  )
+```
+
+```{r}
+pdf("~/desktop/neuronal_1.pdf",
+    height = 8,
+    width = 14)
+print(umap_neuronal_1)
+dev.off()
+```
+
+```{r}
+pdf("~/desktop/neuronal_2.pdf",
+    height = 8,
+    width = 14)
+print(umap_neuronal_2)
+dev.off()
+```
+
+```{r}
+pdf("~/desktop/CM_fingers.pdf",
+    height = 8,
+    width = 14)
+print(umap_interesting_markers)
+dev.off()
+```
+
+```{r}
+pdf("~/desktop/anchor_comparison.pdf",
+    height = 20,
+    width = 12)
+print(umap_72_interesting)
+dev.off()
+```
+
+Okay overall, there's something for me to consider when testing DEGs now which is relevant for when I do this. I've spent too much time now and it's given me good results using Wilcox that I will save this for when re-running the analysis on the new new genome.

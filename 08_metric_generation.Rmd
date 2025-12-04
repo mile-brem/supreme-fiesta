@@ -1,0 +1,483 @@
+# Additional Metric generation
+
+Here I will add:
+1. Module scores:
+1.1 - GMP
+1.2 - Neuronal (follow Nadja)
+1.3 - Ectodermal (follow Alex)
+1.4 - Mesodermal (follow Alex)
+
+2. CytoTRACE
+
+## Module Scores
+
+### GMP
+
+Our first call is GMP.
+
+The GMP genes are:
+PiwiA - VIE-hap1G00000010821
+PiwiB• - VIE-hap1G00000009142
+vasa - VIE-hap1G00000001767
+nanos - VIE-hap1G00000020511
+Tudor1 - VIE_hap1G00000029876
+Tudor2 - VIE-hap1G00000029876
+Tudor3 - VIE_hap1G00000029876 (all map, but need to be split)
+Pumilio - VIE-hap1G00000026919 (potential remove)
+DNMT1 - VIE-hap1G00000001593
+chd1 = VIE-hap1G00000011453
+
+```{r}
+stemness <- list(
+  GMP_core = c("VIE-hap1G00000010821", "VIE-hap1G00000001767", "VIE-hap1G00000020511",
+              "VIE-hap1G00000029876", "VIE-hap1G00000026919"),
+  stem_prolif = c("VIE-hap1G00000010821","VIE-hap1G00000001767", "VIE-hap1G00000020511",
+                  "VIE-hap1G00000029876", "VIE-hap1G00000008904", "VIE-hap1G00000020902",
+                  "VIE-hap1G00000001593", "VIE-hap1G00000011453"))
+```
+
+```{r}
+for (nm in names(stemness)) {
+  merged_local_int <- AddModuleScore(
+    merged_local_int,
+    features = list(stemness[[nm]]),
+    name = nm
+  )
+}
+```
+
+Perhaps more stem cell specific
+
+### Neuronal
+
+I am going to use the same gene set as Nadja for reproducibility
+
+syntaxin-1/2/4/11,= VIE_hap1G00000008625
+syntaxin-16, = VIE_hap1G00000013840
+snap-25, = VIE_hap1G00000006666
+vamp, = VIE_hap1G00000028487
+syt-1, = VIE_hap1G00000003615
+syt-4, = VIE_hap1G00000011857
+syt-7, = VIE_hap1G00000001590
+syt-9, = VIE-hap1G00000000008
+syt-12, = VIE-hap1G00000003607
+syt-15, = VIE-hap1G00000008295
+syt-14/16, = VIE-hap1G00000010858
+syt-17, = VIE-hap1G00000022135
+elav1, = VIE-hap1G00000002639
+and elav2 = VIE-hap1G00000000802
+
+I am also going to add NeuN
+VIE_hap1G00000009485
+
+```{r}
+Neuronal_sig <- list(c("VIE-hap1G00000008625", "VIE-hap1G00000013840", "VIE-hap1G00000006666", "VIE-hap1G00000028487", "VIE-hap1G00000003615", "VIE-hap1G00000011857", 
+                       "VIE-hap1G00000001590", "VIE-hap1G00000000008", "VIE-hap1G00000003607", "VIE-hap1G00000008295", "VIE-hap1G00000010858", "VIE-hap1G00000022135",
+                       "VIE-hap1G00000002639", "VIE-hap1G00000000802"))
+
+Neuronal_sigw_NeuN <- list(c("VIE_hap1G00000008625", "VIE_hap1G00000013840", "VIE_hap1G00000006666", "VIE_hap1G00000028487", "VIE_hap1G00000003615", "VIE_hap1G00000011857", 
+                       "VIE_hap1G00000001590", "VIE-hap1G00000000008", "VIE-hap1G00000003607", "VIE-hap1G00000008295", "VIE-hap1G00000010858", "VIE-hap1G00000022135",
+                       "VIE-hap1G00000002639", "VIE-hap1G00000000802", "VIE_hap1G00000009485"))
+```
+
+```{r}
+merged_local_int <- AddModuleScore(
+  merged_local_int,
+  features = Neuronal_sig,
+  name = "mature_neuronal"
+)
+```
+
+We can also add a neural progenitor module score:
+
+SoxB1	VIE-hap1G00000022933
+SoxB2	VIE-hap1G00000022550
+SoxC	VIE-hap1G00000001443
+Prospero	VIE-hap1G00000005443
+Churchill	VIE_hap1G00000015551
+pax2/5/8	VIE-hap1G00000009925
+pax3/7	VIE-hap1G00000028076
+gata1/2/3	VIE-hap1G00000004809
+achaete-scute	VIE-hap1G00000003103
+neurogenin	VIE-hap1G00000007817
+atonal	VIE-hap1G00000008138
+olig	VIE-hap1G00000000299
+NeuroD	VIE-hap1G00000000663
+nk2.2	VIE-hap1G00000005862
+nk6	VIE-hap1G00000021397
+hb9	VIE-hap1G00000031793
+islet	VIE-hap1G00000011966
+pax6	VIE-hap1G00000017504
+dbx	VIE-hap1G00000015730
+brn3	VIE-hap1G00000012359
+onecut - VIE-hap1G00000016462
+
+These are all the ones which I could find and make sense. They should give a good overview. I have excluded ones which have not been characterised in platynereis yet.
+
+```{r}
+n_progenitor_sig <- list(c("VIE-hap1G00000022933", "VIE-hap1G00000022550", "VIE-hap1G00000001443", "VIE-hap1G00000001443", "VIE-hap1G00000015551", "VIE-hap1G00000009925", "VIE-hap1G00000028076",
+                           "VIE-hap1G00000004809", "VIE-hap1G00000003103", "VIE-hap1G00000007817", "VIE-hap1G00000008138", "VIE-hap1G00000000299", "VIE-hap1G00000000663", "VIE-hap1G00000005862",
+                           "VIE-hap1G00000021397", "VIE-hap1G00000031793", "VIE-hap1G00000011966", "VIE-hap1G00000017504", "VIE-hap1G00000015730", "VIE-hap1G00000012359",
+                           "VIE-hap1G00000016462"))
+
+merged_local_int <- AddModuleScore(
+  merged_local_int,
+  features = n_progenitor_sig,
+  name = "progenitor_neuronal"
+)
+```
+
+
+### Ectodermal/Epidermis
+
+Here We'll follow Alex a good bit. I will create three modules:
+
+Ectoderm_Epidermis:
+Epig1 = VIE-hap1G00000016926
+Col6a6 = VIE-hap1G00000029217
+evenskipped - VIE-hap1G00000032082
+Engrailed = VIE_hap1G00000031340
+Wnt1 = VIE-hap1G00000029210
+
+Ectoderm_PSC:
+Hox3 = VIE-hap1G00000031647
+evenskipped - VIE-hap1G00000032082
+piwiA = VIE-hap1G00000010821
+myc = VIE-hap1G00000002294
+Sp9 = VIE-hap1G00000029312
+
+
+```{r}
+ectoderm_list = list(
+  Ectoderm_Epidermis = c("VIE-hap1G00000016926","VIE-hap1G00000029217","VIE-hap1G00000032082", "VIE-hap1G00000029210", "VIE-hap1G00000031340"),
+  Ectoderm_PSC = c("VIE-hap1G00000031647","VIE-hap1G00000032082", "VIE-hap1G00000010821", "VIE-hap1G00000002294", "VIE-hap1G00000029312"))
+```
+
+```{r}
+for (nm in names(ectoderm_list)) {
+  merged_local_int <- AddModuleScore(
+    merged_local_int,
+    features = list(ectoderm_list[[nm]]),
+    name = nm
+  )
+}
+```
+
+### Mesodermal
+
+The is only one gene really for the "coelomic mesoderm" which is ccdc134 so it doesn't make sense to include others here.
+
+Lastly, the muscle
+Mox = VIE-hap1G00000032306
+SM-MHC = VIE-hap1G00000010914
+ST-MHC = VIE-hap1G00000010323
+FoxF = VIE_hap1G00000014387 VIE_hap1G00000014388 (Needs to be refined)
+LBD3/zasp = VIE_hap1G00000009311
+TroponinT = VIE_hap1G00000016371
+ST-MRLC = VIE_hap1G00000020999
+SM-MRLC = VIE_hap1G00000002219
+Transgelin2 = CANNOT MAP
+Calponin = VIE_hap1G00000015927
+Transgelin1 = VIE_hap1G00000003187
+Myocardin = VIE_hap1G00000009446
+TropI = VIE_hap1G00000016372
+Mef2 = VIE_hap1G00000012433
+Titin = VIE_hap1G00000016719
+Actin = Various VIE id
+MyoD = VIE_hap1G00000000726
+subtilisin-1, partial - VIE-hap1G00000030388
+subtilisin-2 VIE-hap1G00000012804
+
+
+There are others I can add here but I only have the XLOC and that'll be a bitch to get to VIE Id without knowing the sequence.
+
+coelomic_mesoderm_PSCs:
+prrx = VIE-hap1G00000024685
+msx = VIE-hap1G00000019969
+p2x = VIE-hap1G00000002815
+myc = VIE-hap1G00000002294
+
+
+```{r}
+mesoderm_sig <- list(
+  Muscle = c("VIE-hap1G00000032306", "VIE-hap1G00000010914", "VIE-hap1G00000010323", "VIE-hap1G00000014387", "VIE-hap1G00000009311", "VIE-hap1G00000016371", "VIE-hap1G00000020999", "VIE-hap1G00000002219", "VIE-hap1G00000015927", "VIE-hap1G00000003187", "VIE-hap1G00000009446", "VIE-hap1G00000016372","VIE-hap1G00000012433", "VIE-hap1G00000016719", "VIE-hap1G00000000726", "VIE-hap1G00000030388", "VIE-hap1G00000012804"),
+  Coelomic_mesoderm_PSC = c("VIE-hap1G00000024685", "VIE-hap1G00000019969", "VIE-hap1G00000002815", "VIE-hap1G00000002294"))
+
+for (nm in names(mesoderm_sig)) {
+  merged_local_int <- AddModuleScore(
+    merged_local_int,
+    features = list(mesoderm_sig[[nm]]),
+    name = nm
+  )
+}
+```
+
+
+## Cytotrace
+
+This is a faff. Essentially this shit is very poorly designed and really would be nice if it was integrated into seurat. At the current moment, it's a piece of crap, but other packages just don't do the same without trying to fit them to a differentiation trajectory. Okay having to try this gain. I'm going to split all the cells up BUT cytotrace does assign a rank to a cell in a sample. THEREFORE, if I split the data up, I need to renormalise it afterwards. Would be nice to do this on the whole dataset, but I don't think the authors are interested in maintaining this.
+
+
+```{r}
+library(CytoTRACE)
+```
+
+CytoTRACE expects a gene expression value and would prefer that they are not filtered. So I have to get to do this on RAW RAW data.
+
+```{r}
+filtered_seurat <- readRDS(file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/filtered_seurat.RDS")
+```
+
+This is my only cell filtering object. I need to match it to the cells I downsampled to.
+
+```{r}
+# Get the cell names in the downsampled object
+cells_to_keep <- colnames(merged_local_int)
+
+# Subset the filtered_seurat object to only these cells
+filtered_seurat <- subset(filtered_seurat, cells = cells_to_keep)
+```
+
+
+
+```{r}
+#raw_matrix <- as(GetAssayData(filtered_seurat, assay = "RNA", layer = "counts"), "dgCMatrix")
+
+#cytoTRACE_results <- CytoTRACE(raw_matrix, enableFast = TRUE, ncores = 8)
+```
+I am now going to split this into chunks.
+
+
+```{r}
+cells <- colnames(filtered_seurat)
+n <- length(cells)
+num_chunks <- 8
+
+chunk_indices <- split(
+  cells,
+  ceiling(seq_along(cells) / (n / num_chunks))
+)
+```
+
+
+```{r}
+cytotrace_results_list <- list()
+cytogenes_results_list <- list()
+
+for (i in seq_along(chunk_indices)) {
+  chunked_cells <- chunk_indices[[i]]
+  sub <- subset(filtered_seurat, cells = chunked_cells)
+
+  expr <- as.matrix(GetAssayData(sub, layer="counts", assay="RNA"))
+
+  cat("Running CytoTRACE on chunk", i, "with", ncol(expr), "cells...\n")
+  ct <- CytoTRACE(expr, ncores = 14, subsamplesize = 3000)
+  cytotrace_results_list[[i]] <- data.frame(
+    cell = colnames(expr),
+    CytoTRACE_raw = ct$CytoTRACE
+  )
+  cytogenes_results_list[[i]] <- ct$cytoGenes
+}
+```
+
+Okay that worked.
+
+```{r}
+# Combine them all
+cytotrace_all <- bind_rows(cytotrace_results_list)
+
+cytotrace_all <- cytotrace_all %>%
+  mutate(
+    CytoTRACE_rank = rank(CytoTRACE_raw, ties.method = "average"),
+    CytoTRACE_normalized = (CytoTRACE_rank - 1) / (max(CytoTRACE_rank) - 1)
+  )
+
+summary(cytotrace_all$CytoTRACE_normalized)
+hist(cytotrace_all$CytoTRACE_normalized, breaks = 50)
+hist(cytotrace_all$CytoTRACE_raw, breaks = 50)
+
+```
+
+```{r}
+#Assign the normalised values back to merged_local_int and save cytotrace output
+#saveRDS(cytotrace_all, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/cytotrace_out.RDS")
+
+cytotrace_all <- readRDS("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/cytotrace_out.RDS")
+
+merged_local_int <- merged_local_int |> 
+  AddMetaData(
+    metadata = cytotrace_all |>  
+      select(cell, CytoTRACE_normalized)
+  )
+```
+
+I'm also going to look at the genes that are associated with cytotrace and so could potentially infer are stem cells markers here. I expect the genes to be pretty common between all the chunks so I'm just going to find the intersect which is somewhat lazy but I don't think it will really matter
+
+```{r}
+gene_lists <- map(cytogenes_results_list, names)
+
+common_genes <- reduce(gene_lists, intersect)
+length(common_genes)
+
+# Filter cytogenes to common genes
+cyto_mat <- map(cytogenes_results_list, ~ .x[common_genes]) %>% 
+  bind_cols()  # columns = chunks, rows = genes
+rownames(cyto_mat) <- common_genes
+
+# Compute mean or median correlation across chunks. There are of course multiple values per gene so I'm reducing it to a single value
+cyto_consensus <- data.frame(
+  gene = common_genes,
+  mean_correlation = rowMeans(cyto_mat, na.rm = TRUE),
+  median_correlation = apply(cyto_mat, 1, median, na.rm = TRUE)
+) %>%
+  arrange(desc(mean_correlation))
+```
+I'm just going to save this for the moment and maybe come back to it. I have what I need though in the cytotrace scores to show florian.
+
+```{r}
+saveRDS(cyto_consensus, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/cytotrace_genes.RDS")
+```
+
+## Visualisation
+
+Let's view those scores
+
+
+```{r}
+umap_GMP <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "GMP_core1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+```
+
+```{r}
+umap_alex_stem_markers <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "stem_prolif1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+```
+
+```{r}
+umap_mature_neuronal <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "mature_neuronal1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+
+umap_progenitor_neuronal <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "progenitor_neuronal1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+
+umap_Ectoderm_Epidermis <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "Ectoderm_Epidermis1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+
+umap_Ectoderm_PSC <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "Ectoderm_PSC1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+
+umap_Muscle <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "Muscle1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+
+umap_Coelomic_mesoderm_PSC <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "Coelomic_mesoderm_PSC1",
+  raster = F,
+  order = T,
+  stroke.size = 0.8
+) +
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+
+umap_cytotrace <- FeaturePlot(
+  merged_local_int,
+  reduction = "umap",
+  features = "CytoTRACE_normalized",
+  raster = F,
+  stroke.size = 0.5
+) + 
+  scale_color_gradientn(colours = viridisLite::inferno(100))
+```
+
+```{r}
+umap_GMP
+umap_alex_stem_markers
+umap_mature_neuronal 
+umap_progenitor_neuronal
+umap_Ectoderm_Epidermis
+umap_Ectoderm_PSC
+umap_Muscle
+umap_Coelomic_mesoderm_PSC
+umap_cytotrace
+```
+Great they look fantastic, now just to wait for the cytotrace.
+
+Okay fantastic. We now have all metrics I was looking for.
+
+```{r}
+pdf(file = "~/desktop/mesoderm_PSCs_score.pdf",
+    height = 10,
+    width = 16)
+print(umap_Muscle)
+dev.off()
+```
+
+```{r}
+umap_stem_prolif_genes <- FeaturePlot(
+  merged_local_int,
+  features = mesoderm_sig[[1]],
+  raster = F,
+  stroke.size = 0.7,
+  combine = F,
+  reduction = "umap",
+  order = T
+)
+```
+
+```{r}
+pdf(file = "~/desktop/ectoderm_genes.pdf",
+    height = 10,
+    width = 16)
+print(umap_stem_prolif_genes)
+dev.off()
+```
+

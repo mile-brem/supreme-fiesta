@@ -1,0 +1,229 @@
+# Trajectory analyses
+
+I now have two objects at the current moment. merged_local_int which is now finished and subcluster_neuronal_alt containing specifically neuronal lineages.
+
+```{r}
+library(qs2)
+merged_local_int <- qs_read("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_local_int.qs2")
+subcluster_neuronal_alt <- qs_read("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/subcluster_neuronal_alt.qs2")
+```
+
+
+I will do RNA velocity and trajectory analyses using psupertime or others.
+
+It should be noted the difference between "pseudotime" and actual time. Pseudotime simply predicts in an abstract way a 0 time point and 1 time point where cells will sit along. This is more a measure of development you could say. Therefore, this will not encapulate de-differentiation. However, our experiment has actual time. We can also use this as a guide for showing trajectories.
+
+## RNA velocity
+
+The first thing I want to try out is RNA velocity.
+
+After assessing a few, I am going to try out both scVelo and cell2fate. I am going to try cell2fate first as it should be better and then validate it maybe using scVelo
+
+The first thing for RNA velocity however is I need to calcualte the spliced and unspliced RNA. This is done on the command line and then as well both of these tools have been generated in python so we're going to have fun using them here. There are no tutorials for cell2fate in R/reticulate so I'm going to have to have to do that from scratch myself.
+
+### Cell2fate
+
+## Trajectory analysis
+
+There are other ways to go about this which don't use RNA velocity.
+
+I'm going to of course try a few:
+- Slingshot
+- Palantir
+- CellRank
+
+```{r}
+library(reticulate)
+library(scCustomize)
+use_python("/Users/mbrem/Library/r-miniconda-arm64/envs/seuratextend/bin/python", required = TRUE)
+
+py_require("palantir")
+plt <- import("matplotlib.pyplot")
+
+palantir <- import("palantir")
+```
+
+```{r}
+library(SeuratExtend)
+```
+
+
+### Palantir
+
+I'm obviously going to do this one first as it has a cool name from LOTR.
+
+#### Using seuratExtend which kinda sucked
+
+First we produce a diffusion map.
+
+```{r}
+merged_local_int <- Palantir.RunDM(merged_local_int, n_components = 60)
+```
+
+```{r}
+# View the first 2 ms dimensions:
+ms_plot <- DimPlot(merged_local_int, reduction = "ms", group.by = "cell_types_final", label = TRUE, raster = F, stroke.size = 0.8) + NoLegend()
+```
+
+Damn too populations are so far away they skew the map.
+
+```{r}
+merged_local_int <- RunUMAP(merged_local_int, reduction = "ms", dims = 1:22, reduction.name = "umap_ms")
+ms_umap_plot <- DimPlot(merged_local_int, group.by = "cell_types_final", label = TRUE, reduction = "umap_ms", raster = F, stroke.size = 0.8)
+```
+
+Damn that's messy af.
+
+Hmm.. I mean this was good to try, but I don't think I can do this with the main object at all. I cannot set the root cell very easily and this is too complex for these analyses. However, maybe I can dumb this down for it. Let's see how this does with the neurones
+
+```{r}
+subcluster_neuronal_alt <- Palantir.RunDM(subcluster_neuronal_alt,)
+```
+
+```{r}
+# View the first 2 ms dimensions:
+ms_plot <- DimPlot(subcluster_neuronal_alt, reduction = "ms", group.by = "first_cell_types", label = TRUE, raster = F, stroke.size = 0.8) + NoLegend()
+```
+
+Damn too populations are so far away they skew the map.
+
+```{r}
+subcluster_neuronal_alt <- RunUMAP(subcluster_neuronal_alt, reduction = "ms", dims = 1:9, reduction.name = "umap_ms")
+ms_umap_plot <- DimPlot(subcluster_neuronal_alt, group.by = "first_cell_types", label = TRUE, reduction = "umap_ms", raster = F, stroke.size = 0.8)
+```
+
+Okay a little more mangeable.
+
+```{r}
+p <- DimPlot(subcluster_neuronal_alt, reduction = "umap_ms", group.by = "first_cell_types")
+cells <- CellSelector(p)
+```
+Okay we have our starter cells. Unfortunately, you can only select one rather than a population: 7_dpa_regen_only_1_AACCTAGTCCATCTGT-1
+
+```{r}
+subcluster_neuronal_alt <- Palantir.Pseudotime(subcluster_neuronal_alt, start_cell = cells)
+```
+Cool.
+
+```{r}
+ps <- subcluster_neuronal_alt@misc$Palantir$Pseudotime
+head(ps)
+```
+
+
+```{r}
+# Visualize cell fate on UMAP
+colnames(ps)[3] <- c("fate1")
+subcluster_neuronal_alt@meta.data[,colnames(ps)] <- ps
+DimPlot2(subcluster_neuronal_alt, features = colnames(ps), reduction = "umap_ms", 
+         cols = list(continuous = "A", Entropy = "D"), theme = NoAxes())
+```
+
+#### Using palantir through reticulate
+
+```{r}
+subcluster_neuronal_alt_ann <- as.anndata(
+    x = subcluster_neuronal_alt,
+    file_path = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/",
+    file_name = ("subcluster_neuronal_alt_ann.h5ad"),
+    main_layer = "data",
+    other_layers = NULL
+  )
+```
+Okay so I'm going to try doing all the heavy lifting and then return it back to seurat.
+
+```{r}
+dm_res <- palantir$utils$run_diffusion_maps(subcluster_neuronal_alt_ann, n_components = as.integer(60))
+ms_data <- palantir$utils$determine_multiscale_space(subcluster_neuronal_alt_ann)
+```
+Then these guys like magic so let's see I guess
+
+```{r}
+imputed_X <- palantir$utils$run_magic_imputation(
+    subcluster_neuronal_alt_ann
+)
+```
+
+```{r}
+# Pick the matrix you want — usually EigenVectors
+dm_embeddings <- as.matrix(dm_res$EigenVectors)
+colnames(dm_embeddings) <- paste0("DM_", seq_len(ncol(dm_embeddings)))
+
+# Optional: if you want to specify loadings, you can provide them here
+# In diffusion maps, loadings aren't always relevant, so you can leave as NULL
+dm_reduction <- CreateDimReducObject(
+  embeddings = dm_embeddings,
+  key = "DM_",      # prefix for component names
+  assay = "SCT"
+)
+
+# Add to Seurat object
+subcluster_neuronal_alt[["dm"]] <- dm_reduction
+```
+
+And then ms as well.
+
+```{r}
+ms_embeddings <- as.matrix(ms_data)
+colnames(ms_embeddings) <- paste0("MS_", seq_len(ncol(ms_embeddings)))
+
+ms_reduction <- CreateDimReducObject(
+  embeddings = ms_embeddings,
+  key = "MS_",
+  assay = "SCT"
+)
+
+subcluster_neuronal_alt[["ms"]] <- ms_reduction
+```
+
+Let's try see what that looks like again.
+
+```{r}
+# View the first 2 ms dimensions:
+ms_plot <- DimPlot(subcluster_neuronal_alt, reduction = "ms", group.by = "first_cell_types", label = TRUE, raster = F, stroke.size = 0.8) + NoLegend()
+```
+
+Damn too populations are so far away they skew the map.
+
+```{r}
+subcluster_neuronal_alt <- RunUMAP(subcluster_neuronal_alt, reduction = "ms", dims = 1:57, reduction.name = "umap_ms")
+ms_umap_plot <- DimPlot(subcluster_neuronal_alt, group.by = "first_cell_types", label = TRUE, reduction = "umap_ms", raster = F, stroke.size = 0.8)
+```
+
+And add the magic assay
+
+```{r}
+subcluster_neuronal_alt[["MAGIC"]] <- CreateAssayObject(counts = imputed_X)
+```
+
+
+I'm going to try use the same starting cell as before assuming it's mostly doing the same thing:7_dpa_regen_only_1_AACCTAGTCCATCTGT-1
+
+This might fuck up
+```{r}
+# Assuming 'ad' is your AnnData object
+palantir$plot$plot_diffusion_components(subcluster_neuronal_alt)
+
+# Show the plot
+plt$show()
+```
+
+
+
+
+Yeah eventually gave up with this as it started getting a little silly. Can't be fucked
+
+### 
+
+## Tracking
+
+This is just notes to myself that are related to above for steps I took to do the analysis
+
+### Generation of spliced/non-spliced
+
+To make the RNA cleaner I generated the repeat mask for the genome. 
+Steps:
+1. RepeatModeler
+2. RepeatMasker
+3. VeloCyto to generate spliced and unspliced matrix
+

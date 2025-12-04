@@ -1,0 +1,95 @@
+
+# Investigating neurogenesis markers
+
+Here, I investigate genes of interest for neurogenesis
+
+```{r}
+canonical_genes <- read_csv("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/literature_markers.csv")
+#Clean this shit up
+canonical_genes <- canonical_genes |> 
+    mutate(vie_name = gsub("_", "-", vie_name))
+
+canonical_genes <- canonical_genes |> 
+    mutate(marker_for = gsub(" ", "_", marker_for))
+
+#canonical_genes <- canonical_genes[-c(103:105), ]   # remove rows 103, 104, 105
+#canonical_genes <- canonical_genes[, -4]                # remove the 4th column
+```
+
+Plot those genes
+
+```{r}
+canonical_genes_plots <- list()
+
+# Loop through each gene
+for (i in 1:nrow(canonical_genes)) {
+  gene <- canonical_genes$gene_name[i]
+  vie <- canonical_genes$vie_name[i]
+  subtitle <- canonical_genes$marker_for[i]
+  
+  p <- FeaturePlot(subcluster_neuronal, features = vie,
+                   raster = F,
+                   order = T,
+    stroke.size = 0.8,
+    min.cutoff = "q05") + 
+    ggtitle(label = paste0(gene, " (", vie, ")"),
+            subtitle = paste0(subtitle))
+  
+  canonical_genes_plots[[i]] <- p
+  
+  print(p)
+}
+```
+
+```{r}
+names(neuro_genes_plots) <- neuro_genes$gene_name
+```
+
+```{r}
+pdf(file = "~/desktop/time_split.pdf",
+    width = 36,
+    height = 8)
+print(merged_int_global_umap_time_split)
+dev.off()
+```
+
+```{r}
+pdf(file = "~/desktop/canonical_genes_SCT_neuro.pdf",
+    width = 16,
+    height = 10)
+print(canonical_genes_plots)
+dev.off()
+```
+
+```{r}
+umap_clusters <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  group.by = "subcluster15",
+  shuffle = T,
+  raster = F,
+  stroke.size = 0.8,
+  label = T
+) +
+  NoLegend()
+
+umap_time <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  group.by = "timepoint",
+  shuffle = T,
+  raster = F,
+  stroke.size = 0.8
+)
+```
+
+```{r}
+pdf("~/desktop/cluster_time.pdf",
+    height = 10,
+    width = 16)
+print(umap_clusters)
+print(umap_time)
+dev.off()
+```
+
+

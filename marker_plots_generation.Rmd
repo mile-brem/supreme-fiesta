@@ -1,0 +1,266 @@
+# Dot plot generation
+
+I kinda skipped the markers for the populations I had so I'm going through and getting the markers and generating the dot plots.
+
+I have the simple top 10 markers for the cluster I found but I think it's better to look at the markers that really define those cells types.
+
+```{r}
+library(SeuratExtend)
+```
+
+
+## Main object clusters
+
+After everything I came up with these.
+
+```{r}
+print(unique(merged_local_int$cell_types_final))
+```
+And to remind ourselves
+
+```{r}
+umap_main_celltypes <- DimPlot(
+  subcluster_neuronal_alt,
+  group.by = "first_cell_types",
+  reduction = "umap",
+  raster = F,
+  stroke.size = 0.8,
+  label = T,
+  #label.size = ,
+  repel = T,
+  #label.box = T
+)  
+  #NoLegend()
+```
+
+```{r}
+pdf("~/desktop/main_cell_types.pdf")
+print(umap_main_celltypes)
+dev.off()
+```
+
+
+Now let's look at generating the dot plots for them. What I need to do is specify a vector of the marker genes and pass this to the plot. So I don't forget the markers.
+
+I re-ran this:
+
+```{r}
+library(metap)
+clusters <- levels(Idents(merged_local_int))  # e.g., "0", "1", "2", etc.
+
+all_markers <- lapply(clusters, function(clust) {
+  FindConservedMarkers(
+    merged_local_int,
+    ident.1 = clust,
+    grouping.var = "timepoint",
+    assay = "SCT",
+    only.pos = TRUE,
+    min.diff.pct = 0.25,
+    min.pct = 0.25,
+    logfc.threshold = 1
+  )
+})
+
+names(all_markers) <- clusters  # name each list element by cluster
+```
+
+All a side note, I will add 
+
+```{r}
+# Combine all marker tables into one dataframe
+all_markers_df <- map2_df(all_markers, names(all_markers), ~
+  .x %>%
+    rownames_to_column("gene") %>%
+    mutate(cluster_id = .y)
+)
+
+write_csv(all_markers_df, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/all_markers_merged.csv")
+```
+
+To repeat here the top 10.
+
+```{r}
+# Identify all columns ending with "_avg_log2FC"
+fc_cols <- grep("_avg_log2FC$", colnames(all_markers_df), value = TRUE)
+
+# Compute the average log2FC across all timepoints for each gene. More or less reverts what I did by 
+all_markers_df <- all_markers_df %>%
+  mutate(avg_fc = rowMeans(select(., all_of(fc_cols)), na.rm = TRUE))
+
+# Extract top 10 markers per cluster
+top10 <- all_markers_df %>%
+  group_by(cluster_id) %>%
+  top_n(n = 10, wt = avg_fc) %>%
+  ungroup()
+
+View(top10)
+```
+
+This produces a dataframe with 246 obvs. I should have 270 in practice, but there are some that overlap persumably. 
+
+And the dot plot for those
+
+```{r}
+# remove duplicates
+top10_genes <- unique(top10$gene)
+# DotPlot
+gene_marker_dot_conserved <- DotPlot(merged_local_int, features = top10_genes) + RotatedAxis() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) +
+  ggtitle("Top 10 marker genes per identified celltype (239 genes total)")
+```
+
+Looks nice.
+
+```{r}
+pdf(file = "~/desktop/gene_marker_dot_conserved.pdf",
+    height = 8,
+    width = 14)
+print(gene_marker_dot_conserved)
+dev.off()
+```
+
+Now we move to a more intuitive marker plot based on the markers I found.
+
+```{r}
+grouped_features <- list(
+  "mature_neuronal" = c("VIE-hap1G00000008625", "VIE-hap1G00000013840", "VIE-hap1G00000006666", "VIE-hap1G00000028487", "VIE-hap1G00000003615", "VIE-hap1G00000011857", 
+                       "VIE-hap1G00000001590", "VIE-hap1G00000000008", "VIE-hap1G00000003607", "VIE-hap1G00000008295", "VIE-hap1G00000010858", "VIE-hap1G00000022135",
+                       "VIE-hap1G00000002639", "VIE-hap1G00000000802", "VIE-hap1G00000008445"),
+  "neuronal_progenitors" = c("VIE-hap1G00000022933", "VIE-hap1G00000022550", "VIE-hap1G00000001443", "VIE-hap1G00000001443", "VIE-hap1G00000015551", "VIE-hap1G00000009925", "VIE-hap1G00000028076",
+                                    "VIE-hap1G00000003103", "VIE-hap1G00000007817", "VIE-hap1G00000008138", "VIE-hap1G00000000299", "VIE-hap1G00000000663", "VIE-hap1G00000005862",
+                           "VIE-hap1G00000021397", "VIE-hap1G00000031793", "VIE-hap1G00000011966", "VIE-hap1G00000017504", "VIE-hap1G00000015730", "VIE-hap1G00000012359",
+                           "VIE-hap1G00000016462"),
+  "Epi" = c("VIE-hap1G00000016926","VIE-hap1G00000029217"), # Main ones
+  "stem&dev/TF" = c("VIE-hap1G00000032082", "VIE-hap1G00000029210", "VIE-hap1G00000031340", "VIE-hap1G00000031647","VIE-hap1G00000032082",
+                         "VIE-hap1G00000010821", "VIE-hap1G00000002294", "VIE-hap1G00000029312",  "VIE-hap1G00000010821", "VIE-hap1G00000001767", "VIE-hap1G00000020511",
+                         "VIE-hap1G00000029876", "VIE-hap1G00000026919", "VIE-hap1G00000001767", "VIE-hap1G00000020511", "VIE-hap1G00000029876", "VIE-hap1G00000008904", "VIE-hap1G00000020902",
+                         "VIE-hap1G00000001593", "VIE-hap1G00000011453", "VIE-hap1G00000024685", "VIE-hap1G00000019969", "VIE-hap1G00000002815", "VIE-hap1G00000002294",
+                         "VIE-hap1G00000032321","VIE-hap1G00000011122", "VIE-hap1G00000019973", "VIE-hap1G00000011315", "VIE-hap1G00000027287", "VIE-hap1G00000004809"), # These are general ones
+  "Muscle" = c("VIE-hap1G00000032306", "VIE-hap1G00000010914", "VIE-hap1G00000010323", "VIE-hap1G00000014387", "VIE-hap1G00000009311", "VIE-hap1G00000016371", "VIE-hap1G00000020999",
+                       "VIE-hap1G00000002219", "VIE-hap1G00000015927", "VIE-hap1G00000003187", "VIE-hap1G00000009446", "VIE-hap1G00000016372","VIE-hap1G00000012433", "VIE-hap1G00000016719",
+                       "VIE-hap1G00000000726", "VIE-hap1G00000030388", "VIE-hap1G00000012804"), #Most of them apart from actin which there are several I don't have access to yet
+  "CM" = c("VIE-hap1G00000019827", "VIE-hap1G00000006950", "VIE-hap1G00000006950"), # The three that are produced from the output
+  "Neuropeptides" = c("VIE-hap1G00000005749", "VIE-hap1G00000006192", "VIE-hap1G00000016590", "VIE-hap1G00000017172", "VIE-hap1G00000025191", "VIE-hap1G00000015640", "VIE-hap1G00000004914",
+                      "VIE-hap1G00000014714", "VIE-hap1G00000028248","VIE-hap1G00000016230", "VIE-hap1G00000002821", "VIE-hap1G00000007580", "VIE-hap1G00000016163", "VIE-hap1G00000003029",
+                      "VIE-hap1G00000005749", "VIE-hap1G00000027136", "VIE-hap1G00000006192", "VIE-hap1G00000028994", "VIE-hap1G00000023465", "VIE-hap1G00000006679",
+                      "VIE-hap1G00000032320", "VIE-hap1G00000016475", "VIE-hap1G00000015623", "VIE-hap1G00000031407", "VIE-hap1G00000023115", "VIE-hap1G00000020381", "VIE-hap1G00000024873",
+                      "VIE-hap1G00000001824", "VIE-hap1G00000016846", "VIE-hap1G00000020917"), #All that I could find on first pass and should be enough
+  "Globulins" = c("VIE-hap1G00000016863", "VIE-hap1G00000010186", "VIE-hap1G00000016556", "VIE-hap1G00000016557", "VIE-hap1G00000016550", "VIE-hap1G00000012780"),
+  "CS" = c("VIE-hap1G00000002136", "VIE-hap1G00000002158", "VIE-hap1G00000012840", "VIE-hap1G00000012404"),
+  "Gut" = c("VIE-hap1G00000022325", "VIE-hap1G00000000952", "VIE-hap1G00000003600", "VIE-hap1G00000031624"),
+  "misc" = c("VIE-hap1G00000025691", "VIE-hap1G00000014537", "VIE-hap1G00000008109", "VIE-hap1G00000007671", "VIE-hap1G00000004228", "VIE-hap1G00000023439",
+                     "VIE-hap1G00000011588", "VIE-hap1G00000023438")
+)
+
+#I was copying pasting so I might have accidentally duplicated one or two
+grouped_features_clean <- lapply(grouped_features, function(x) unique(x))
+
+```
+
+
+
+```{r}
+gene_key <- c(
+  "VIE-hap1G00000008625" = "",
+  "VIE-hap1G00000016590" = "FVRIamide neuropeptide precursor",
+  "VIE-hap1G00000017172" = "DLamide neuropeptide precursor",
+  "VIE-hap1G00000025191" = "FLamide neuropeptide precursor",
+  "VIE-hap1G00000015640" = "FMRFamide neuropeptide precursor",
+  "VIE-hap1G00000004914" = "FVamide neuropeptide precursor",
+  "VIE-hap1G00000025691" = "DSL-like protein 1",
+  "VIE-hap1G00000008445" = "polycystic kidney disease 2.1",
+  "VIE-hap1G00000002136" = "Fcmg5",
+  "VIE-hap1G00000002158" = "cs3",
+  "VIE-hap1G00000012840" = "cs1",
+  "VIE-hap1G00000012404" = "cs2",
+  "VIE-hap1G00000000952" = "alpha-amylase",
+  "VIE-hap1G00000031624" = "Legumain",
+  "VIE-hap1G00000003600" = "enteropep",
+  "VIE-hap1G00000011315" = "rx",
+  "VIE-hap1G00000014537" = "dynamin",
+  "VIE-hap1G00000004809" = "GATA123",
+  "VIE-hap1G00000027287" = "GATA456",
+  "VIE-hap1G00000020917" = "vasotocin-neurophysin",
+  "VIE-hap1G00000016863" = "giant globin linker protein 1",
+  "VIE-hap1G00000010186" = "giant globin linker protein 2",
+  "VIE-hap1G00000016556" = "extracellular globin Egb_B2",
+  "VIE-hap1G00000016557" = "extracellular globin Egb_A2",
+  "VIE-hap1G00000016550" = "extracellular globin Egb_B1",
+  "VIE-hap1G00000012780" = "extracellular globin Egb_A1a",
+  "VIE-hap1G00000008109" = "C1q-domain containing protein",
+  "VIE-hap1G00000007671" = "PEG3+_putative",
+  "VIE-hap1G00000004228" = "Reelin_putative",
+  "VIE-hap1G00000007078" = "SIX4_putative"
+)
+```
+
+```{r}
+dot_plot <- DotPlot(merged_local_int, features = grouped_features_clean) +
+  #scale_color_viridis_c(option = "inferno") +
+  RotatedAxis()
+```
+
+## Neuronal
+
+```{r}
+clusters_sub <- levels(Idents(subcluster_neuronal_alt))  # e.g., "0", "1", "2", etc.
+
+all_markers_sub <- lapply(clusters_sub, function(clust) {
+  FindConservedMarkers(
+    subcluster_neuronal_alt,
+    ident.1 = clust,
+    grouping.var = "timepoint",
+    assay = "SCT",
+    only.pos = TRUE,
+    min.diff.pct = 0.25,
+    min.pct = 0.25,
+    logfc.threshold = 0.25,
+    recorrect_umi = FALSE
+  )
+})
+
+names(all_markers_sub) <- clusters_sub
+```
+
+```{r}
+# Combine all marker tables into one dataframe
+all_markers_df_sub <- map2_df(all_markers_sub, names(all_markers_sub), ~
+  .x %>%
+    rownames_to_column("gene") %>%
+    mutate(cluster_id = .y)
+)
+
+write_csv(all_markers_df, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/all_markers_sub_merged.csv")
+```
+
+To repeat here the top 10.
+
+```{r}
+# Identify all columns ending with "_avg_log2FC"
+fc_cols <- grep("_avg_log2FC$", colnames(all_markers_df_sub), value = TRUE)
+
+# Compute the average log2FC across all timepoints for each gene. More or less reverts what I did by 
+all_markers_df_sub <- all_markers_df_sub %>%
+  mutate(avg_fc = rowMeans(select(., all_of(fc_cols)), na.rm = TRUE))
+
+# Extract top 10 markers per cluster
+top10_sub <- all_markers_df_sub %>%
+  group_by(cluster_id) %>%
+  top_n(n = 10, wt = avg_fc) %>%
+  ungroup()
+
+View(top10_sub)
+```
+
+This produces a dataframe with 246 obvs. I should have 270 in practice, but there are some that overlap persumably. 
+
+And the dot plot for those
+
+```{r}
+# remove duplicates
+top10_sub_genes <- unique(top10_sub$gene)
+# DotPlot
+gene_marker_dot_conserved_sub <- DotPlot(subcluster_neuronal_alt, features = top10_sub_genes) + RotatedAxis() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) +
+  ggtitle("Top 10 marker genes per identified celltype (199 genes total)")
+```

@@ -1,0 +1,164 @@
+
+# Global Integration
+
+Following a large exploration of algorithms at a local level, I am also going to integrate at a global level to see where these efforts get me.
+
+I will use the RPCA algorithm.
+
+## Retrieve object
+
+Again, we will start with the split object that has been SCTransformed.
+
+```{r}
+split_seurat <- readRDS(file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/split_seurat.RDS")
+```
+
+## Integration via RPCA
+
+This integration method is similar to CCA, but with some key differences. CCA assumes that cell types are conserved, but there are substantial differences in gene expression due to technical variation. However, in the case when cell types are non-overlapping, as could occur in our dataset (i.e., de-differentiated stem cells that don't occur in trunk), this could over-correct and merge cell types together. The alternative in this case is reciprocal PCA which is considered to be more conservative.
+
+This is recommended when:
+- A substantial fraction of cells in one dataset have no matching type in the other
+- Datasets originate from the same platform (i.e. multiple lanes of 10x genomics)
+- There are a large number of datasets or cells to integrate (see here for more tips on integrating large datasets)
+
+In code, there is something slightly different in that PCA needs to be run per sample.
+
+```{r}
+#for (i in 1:length(split_seurat)) {
+#  split_seurat[[i]] <- RunPCA(split_seurat[[i]], features = var_features, assay = "SCT", npcs = 100, verbose = F)
+#}
+```
+
+Find intergation anchors again. I will try to do k.anchors 5 (default) and 10 (harsher)
+```{r}
+#merged_RPCA_anchors_5 <- FindIntegrationAnchors(object.list = split_seurat, anchor.features = var_features, reduction = "rpca")
+```
+
+```{r}
+#merged_RPCA_anchors_10 <- FindIntegrationAnchors(object.list = split_seurat, anchor.features = var_features, reduction = "rpca", k.anchor = 10)
+```
+
+And run the integration. The object were saved and then the function "integratedata" as below was run on LISC as it's more computationally intensive than my computer can handle. (mostly in ram)
+
+```{r}
+#Save anchors and var_features
+#saveRDS(merged_RPCA_anchors_5, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_RPCA_anchors_5.RDS")
+#saveRDS(merged_RPCA_anchors_10, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_RPCA_anchors_10.RDS")
+#saveRDS(var_features, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/var_features.RDS")
+```
+
+
+```{r}
+#merged_seurat_rpca <- IntegrateData(
+#  anchorset = merged_RPCA_anchors,
+#  normalization.method = "SCT",
+#  dims = 1:50
+#)
+```
+
+The analysis worked for the default but the 10 anchors caused an error related to the matrix hard-limit so that analysis can't be done.
+
+Read the object back in.
+
+```{r}
+merged_int_global <- readRDS("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_int_global_5.RDS")
+merged_int_global
+```
+
+Now run UMAP and plot.
+
+```{r}
+#Run PCA from integrate values
+merged_int_global <- merged_int_global |> 
+  RunPCA(assay = "integrated", 
+         npcs = 100,
+         verbose = FALSE)
+
+#UMAP
+merged_int_global <- merged_int_global |> 
+  RunUMAP(reduction = "pca",
+          dims = 1:50,
+          reduction.name = "umap")
+```
+
+And finally plotting
+
+```{r}
+# Create the UMAP dimplot
+merged_int_global_umap_time <- merged_int_global |> 
+  DimPlot(reduction = "umap",
+          group.by = "timepoint",
+          raster = F,
+          pt.size = .001) + 
+  ggtitle("Intergrated Global - Timepoints")
+
+merged_int_global_umap_time_split <- merged_int_global |> 
+  DimPlot(reduction = "umap",
+          split.by = "timepoint",
+          group.by = "timepoint",
+          raster = F,
+          pt.size = .001) + 
+  ggtitle("Intergrated Global - Timepoints") +
+  NoLegend()
+
+
+timepoints <- unique(merged_int_global$timepoint)
+
+merged_int_global_umap_time_split <- list()
+
+color_by <- "timepoint" 
+
+for (tp in timepoints) {
+  p <- DimPlot(
+    subset(merged_int_global, timepoint == tp),
+    reduction = "umap",
+    group.by = "timepoint",
+    pt.size = 0.0001,
+    raster = FALSE
+  ) + ggtitle(paste("Timepoint:", tp))
+  
+  merged_int_global_umap_time_split[[i]] <- p
+  
+  print(p)
+}
+
+merged_int_global_umap_chem <- merged_int_global |> 
+  DimPlot(reduction = "umap",
+          group.by = "chemistry",
+          raster = F,
+          pt.size = .001) +
+  ggtitle("Integrated Global - Chemistry")
+
+merged_int_global_umap_rep <- merged_int_global |> 
+  DimPlot(reduction = "umap",
+          group.by = "replicate",
+          raster = F,
+          pt.size = .001) +
+  ggtitle("Integrated Global - Replicate")
+
+merged_int_global_umap_rep
+merged_int_global_umap_chem
+merged_int_global_umap_time
+```
+
+Well very interesting.
+
+We have the separated out fingers etc. and this doesn't look too bad. There are some ill-defined clusters, but I don't think this will get much better. I've given it all the information in the right way. Calculated the merging correctly so I think this is the result.
+
+Let's save those plots as well
+
+```{r}
+#Saving
+#pdf("~/Desktop/umap_integration.pdf",
+#    height = 8,
+#    width = 11)
+#print(merged_int_global_umap_time)
+#print(merged_int_global_umap_chem)
+#print(merged_int_global_umap_rep)
+#dev.off()
+```
+
+Great! Let's move along.
+
+

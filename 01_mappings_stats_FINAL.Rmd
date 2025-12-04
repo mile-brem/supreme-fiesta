@@ -1,0 +1,250 @@
+# Mapping statistics across samples
+
+Here we will look at the statistics related to mapping with a few graphs.
+
+Let's load in the metrics_summary.csv files.
+
+```{r, message=FALSE, echo=FALSE}
+library(tidyverse) #Load in tidyverse for QoL
+library(janitor) # Cleaning of the data
+
+#Read in metadata file
+meta <- read_csv("/Volumes/MILES_SDD/01_projects_analysis/01.01_neurogenesis/251022_regenerate_integration/metadata.csv")
+
+#Define paths
+path_A_B <- "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251009_72hpa-/single_cell_data/02_cellranger_outs"
+path_C   <- "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251014_72hpa+/01_cellranger_outs"
+
+# Lil function for file paths
+get_metrics_path <- function(sample, original_ident) {
+  if (sample <= 208436) {
+    file.path(path_A_B, original_ident, "metrics_summary.csv")
+  } else if (sample >= 345607) {
+    file.path(path_C, original_ident, "metrics_summary.csv")
+  } else {
+    NA_character_
+  }
+}
+
+# Create list
+metrics_files <- map2_chr(meta$sample, meta$original_ident, get_metrics_path)
+names(metrics_files) <- meta$new_ident  # use sample IDs as names
+
+metrics_list <- map(metrics_files, ~ {
+  if (file.exists(.x)) {
+    read_csv(.x, col_types = cols(.default = "c"), show_col_types = FALSE) %>%
+      janitor::clean_names()
+  } else {
+    message("Warning: File not found - ", .x)
+    NULL
+  }
+})
+
+metrics <- bind_rows(metrics_list, .id = "new_ident") %>%
+  mutate(
+    across(
+      !matches("new_ident"),
+      ~ suppressWarnings(parse_number(str_replace_all(., "[,%]", "")))
+    )
+  )
+#Add the metadata
+metrics <- left_join(metrics, meta, by = "new_ident")
+
+# Save this file
+write_csv(metrics, "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/combined_mapping_metrics.csv")
+
+# Really annoying by I can't replace the % string for some of these values so I went through and deleted them myself in the csv and reload it
+
+#metrics <- read_csv("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/combined_mapping_metrics.csv")
+
+metrics <- metrics %>%
+  mutate(new_ident = fct_reorder(new_ident, replicate, .fun = min))
+
+```
+
+Great! Let's move to explore the data
+
+First, lets look at the spread of mapping across exon/intron/intergenic. Here we first manipulate the dataframe.
+
+```{r}
+# Cols of interest
+cols <- c(
+          "reads_mapped_confidently_to_intergenic_regions",
+          "reads_mapped_confidently_to_intronic_regions",
+          "reads_mapped_confidently_to_exonic_regions",
+          "new_ident",
+          "replicate")
+
+# Manipulate data frame for ggplot, long
+metric_focus <- metrics %>%
+  select(all_of(cols)) %>%
+  pivot_longer(
+    cols = starts_with("reads_mapped_confidently_to"),
+    names_to = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(
+    variable = str_replace_all(variable, "reads_mapped_confidently_to_", ""),
+    variable = str_replace_all(variable, "_regions", "")
+  )
+
+metric_avg <- metric_focus %>%
+  group_by(replicate, variable) %>%
+  summarise(
+    value = mean(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+And now we plot!
+
+```{r}
+# plot by sample
+genemap_by_sample <- metric_focus %>% 
+  ggplot(aes(x = new_ident, y = value, fill = variable)) +
+  geom_bar(
+        position = "stack",
+        stat = "identity") +
+  coord_flip() +
+    labs(
+        x = "Sample",
+        y = "Percentage of Reads",
+        title = "Percent of Reads Mapped to Each Region",
+        fill = "Region") +
+  theme_minimal()
+
+
+
+#plot by group
+genemap_by_rep <- metric_avg %>% 
+  ggplot(aes(x = replicate, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "stack", color = "black", linewidth = 0.2) +
+  coord_flip() +
+  labs(
+    x = "Replicate",
+    y = "Average Percentage of Reads",
+    title = "Average Percent of Reads Mapped to Each Region",
+    fill = "Region"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "bottom"
+  )
+
+pdf(file = "plots/mapping/percentage_mapped_to_each_region_by_sample.pdf",
+    width = 8, height = 6)
+print(genemap_by_sample)
+dev.off()
+
+pdf(file = "plots/mapping/percentage_mapped_to_each_region_by_replicate.pdf",
+    width = 8, height = 6)
+print(genemap_by_rep)
+dev.off()
+```
+
+Now lets look at transcriptome/genome
+
+```{r}
+cols_genome_transcriptome <- c(
+  "reads_mapped_confidently_to_genome",
+  "reads_mapped_confidently_to_transcriptome",
+  "new_ident",
+  "replicate"
+)
+
+metric_gen_tx <- metrics %>%
+  select(all_of(cols_genome_transcriptome)) %>%
+  pivot_longer(
+    cols = starts_with("reads_mapped_confidently_to"),
+    names_to = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(
+    variable = str_replace_all(variable, "reads_mapped_confidently_to_", "")
+  )
+
+
+
+metric_gen_tx_avg <- metric_gen_tx %>% 
+    group_by(replicate, variable) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+```
+
+And the plotting
+
+```{r}
+#Genome mapping by sample
+genmap_by_sample <- metric_gen_tx %>% 
+  ggplot(aes(x = new_ident, y = value, fill = variable)) +
+  geom_bar(
+        position = "dodge",
+        stat = "identity") +
+    labs(
+        x = "Sample",
+        y = "Percentage of Reads",
+        title = "Percent of Reads Mapped to Each Region",
+        fill = "Region") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# By replicate
+genmap_by_rep <- metric_gen_tx_avg %>% 
+  ggplot(aes(x = replicate, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black", linewidth = 0.2) +
+  labs(
+    x = "Replicate",
+    y = "Average Percentage of Reads",
+    title = "Average Percent of Reads Mapped to Each Region",
+    fill = "Region"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "bottom"
+  )
+
+genmap_by_sample
+genmap_by_rep
+```
+
+Overall, the mapping has performed worse on the more recent samples. Despite the use of the updated chemistry There could be a variety of reasons for this. They likely lie in library preparation/experimental error.
+
+There are potential tells here in that there seems to be a lower amount of valid barcodes and quite lower sequencing saturation. You can argue that the newer samples should have been sequenced deeper.
+
+See here:
+
+```{r}
+#Sequencing saturation
+seq_sat <- metrics %>%
+  ggplot(aes( x = new_ident, y = sequencing_saturation, fill = replicate)) +
+  geom_bar(stat = "identity") +
+  labs(
+    x  = "Sample",
+    y = "Sequencing Saturation (%)",
+    title = "Sequencing saturation of each sample"
+  ) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+#Valid barcodes
+barcodes <- metrics %>%
+  ggplot(aes(x = new_ident, y = valid_barcodes, fill = replicate)) +
+  geom_bar(stat = "identity") +
+  labs(
+    x = "Sample",
+    y = "No. of Valid Bacodes",
+    title = "Number of valid barcodes by each sample (%)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+seq_sat
+barcodes
+```
+
+#

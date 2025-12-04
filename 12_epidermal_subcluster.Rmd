@@ -1,0 +1,365 @@
+# Subclustering of epidermis
+
+The epidermis cluster will contain the ectodermal PSCs and I HOPE some sort of early stem cells that will be committed to the neural fate. I hope to subcluster the epidermis and then add this back to the neuronal subcluster.
+
+## Creation of object and processing
+
+```{r}
+epidermis_call <- "Epidermis"
+
+subcluster_epidermis <- subset(
+  merged_local_int,
+  idents = epidermis_call
+)
+
+DefaultAssay(subcluster_epidermis) <- "integrated"
+```
+
+We now have our object and we basically get to run through the process again.
+
+```{r}
+#run PCA
+subcluster_epidermis <- RunPCA(subcluster_epidermis, npcs = 100, verbose = FALSE)
+
+# Plot the elbow plot
+ElbowPlot(object = subcluster_epidermis, 
+          ndims = 100)
+```
+
+```{r}
+# Determine percent of variation associated with each PC
+pct <- subcluster_epidermis[["pca"]]@stdev / sum(subcluster_epidermis[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5
+co1 <- which(cumu > 75 & pct < 5)[1]
+
+co1
+
+# Determine the difference between variation of PC and subsequent PC
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation
+pcs <- min(co1, co2)
+
+pcs
+```
+
+
+```{r}
+#Run the UMAP
+subcluster_epidermis <- RunUMAP(subcluster_epidermis, dims = 1:60, verbose = FALSE)
+```
+
+```{r}
+#Clustering
+
+# Determine the K-nearest neighbor graph
+subcluster_epidermis <- FindNeighbors(object = subcluster_epidermis, 
+                                dims = 1:60,
+                                k.param = 30,
+                                n.trees = 400)
+
+
+kNN_sub <- pheatmap(merged_local_int@graphs$integrated_nn[1:200, 1:200],
+         col = c("white", "black"), border_color = "grey90", main = "KNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("kNN graph of merged_seurat_rpca")
+
+sNN_sub <- pheatmap(merged_local_int@graphs$integrated_snn[1:200, 1:200],
+         col = colorRampPalette(c("white", 'red', "black"))(100),
+         border_color = "grey90", main = "SNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("sNN graph of merged_seurat_rpca")
+
+kNN_sub
+sNN_sub
+```
+
+```{r}
+# Determine the clusters for various resolutions                                
+subcluster_epidermis <- FindClusters(object = subcluster_epidermis,
+                               resolution = seq(0.2, 2, by = 0.1),
+                               algorithm = 4)
+```
+
+### Clustering look
+
+Great! Let's have a look at them.
+
+```{r}
+library(clustree)
+clustertree <- clustree(subcluster_epidermis, prefix = "integrated_snn_res.")
+```
+
+```{r}
+library(bluster)
+
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_epidermis@meta.data), value = TRUE)
+
+# Loop over each resolution column
+silhouette_results <- lapply(resolution_cols, function(col_name) {
+  clust <- subcluster_epidermis@meta.data[[col_name]]
+  emb <- Embeddings(subcluster_epidermis, "pca")
+  sil <- approxSilhouette(emb, clusters = clust)
+  
+  # Extract resolution from column name (e.g., "RNA_snn_res.0.8" -> "0.8")
+  resolution <- sub("integrated_snn_res\\.", "", col_name)
+  
+  data.frame(
+    cell = rownames(emb),
+    resolution = resolution,
+    silhouette_width = sil$width,
+    cluster = as.factor(sil$cluster),
+    row.names = NULL,
+    closest_other = as.factor(sil$other)
+  )
+})
+
+# Combine allresults into one dataframe
+combined_sil_df <- bind_rows(silhouette_results)
+
+# Ensure resolution is treated as an ordered numeric for proper sorting
+combined_sil_df <- combined_sil_df %>%
+  mutate(resolution = factor(resolution, levels = sort(unique(as.numeric(resolution)))))
+
+# Plot: Boxplot per cluster, faceted by resolution
+all_sil <- ggplot(combined_sil_df, aes(x = cluster, y = silhouette_width, fill = cluster)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  facet_wrap(~ resolution, scales = "free_x") +
+  labs(
+    title = "Silhouette Width per Cluster across Resolutions",
+    x = "Cluster",
+    y = "Silhouette Width"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+# Compute confusion-like tables per resolution
+confusion_per_res <- combined_sil_df %>%
+  mutate(
+    correct = silhouette_width > 0,
+    assigned = cluster,
+    closest = ifelse(correct, as.character(cluster), as.character(closest_other))
+  ) %>%
+  count(resolution, assigned, closest) %>%
+  group_by(resolution, assigned) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    # Convert to numeric-safe factors per resolution
+    assigned = factor(assigned, levels = sort(unique(as.numeric(as.character(assigned))))),
+    closest = factor(closest, levels = sort(unique(as.numeric(as.character(closest)))))
+  )
+# 
+heatmap_sil <- ggplot(confusion_per_res, aes(x = assigned, y = closest, fill = prop)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "C") +
+  facet_wrap(~ resolution, scales = "free") +
+  #coord_equal() +
+  labs(
+    title = "Cluster Confusion (Assigned vs Closest Other Cluster)",
+    x = "Assigned Cluster",
+    y = "Closest Cluster (if Silhouette < 0)",
+    fill = "Proportion"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+all_sil
+heatmap_sil
+```
+
+Really high heterogeneity across the board.
+
+```{r}
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_epidermis@meta.data), value = TRUE)
+
+# Loop over resolutions and generate DimPlots
+umap_plots_subclus_epi <- lapply(resolution_cols, function(col_name) {
+  resolution_label <- sub("integrated_snn_res\\.", "", col_name)
+  
+  p <- DimPlot(
+    subcluster_epidermis,
+    reduction = "umap",
+    group.by = col_name,
+    label = TRUE,
+    label.size = 4,
+    raster = F,
+    stroke.size = 0.5
+  ) +
+    ggtitle(paste("Resolution - integrated", resolution_label)) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  
+  return(p)
+})
+```
+
+Let's see
+
+```{r}
+umap_plots_subclus_epi
+```
+
+Hmm. Not an easy task. Let's see where the PSCs are.
+
+Before digging into this more, I'm going to do it a different way with findsubcluster()
+
+### Find those markers
+
+```{r}
+library(metap)
+
+Idents(subcluster_epidermis) = "integrated_snn_res.0.2"
+
+clusters_sub_epi <- levels(Idents(subcluster_epidermis))  # e.g., "0", "1", "2", etc.
+
+all_markers_sub_epi <- lapply(clusters_sub_epi, function(clust) {
+  FindConservedMarkers(
+    subcluster_epidermis,
+    ident.1 = clust,
+    grouping.var = "timepoint",
+    assay = "SCT",
+    only.pos = TRUE,
+    min.diff.pct = 0.25,
+    min.pct = 0.25,
+    logfc.threshold = 1,
+    recorrect_umi = FALSE
+  )
+})
+
+names(all_markers_sub_epi) <- clusters_sub_epi  # name each list element by cluster
+
+#saveRDS(all_markers_sub, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/all_markers_sub_neurone.RDS")
+```
+
+HAHAH practically nothing passes the thresholds, there are no DEGs for most of the clusters. I think this is fruitless if it's only just to pass this to the neuronal subcluster.
+
+## FindSubCluster() approach
+
+```{r}
+merged_local_int <- FindSubCluster(
+  object      = merged_local_int,
+  cluster     = "Epidermis",
+  graph.name  = "integrated_snn", 
+  subcluster.name = "subcluster_epi", 
+  resolution  = 0.2,
+  algorithm = 4 
+)
+```
+
+Let's see
+
+```{r}
+# Get number of subclusters
+n_sub <- length(unique(merged_local_int$subcluster_epi))
+
+# Make a palette
+palette <- scales::hue_pal()(n_sub)
+
+umap_subcluster_epi <- DimPlot(
+  merged_local_int,
+  reduction = "umap",
+  group.by = "subcluster_epi",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 2.5,
+  cols = palette
+) + NoLegend()
+```
+
+```{r}
+epi_subs <- c("Epidermis_1", "Epidermis_2", "Epidermis_3", "Epidermis_4")
+
+cols_use <- c(
+  "Epidermis_1" = "#1b9e77",
+  "Epidermis_2" = "#d95f02",
+  "Epidermis_3" = "#7570b3",
+  "Epidermis_4" = "#e7298a",
+  "other"       = "grey80"
+)
+
+merged_local_int$epi_colors <- ifelse(
+  merged_local_int$subcluster_epi %in% epi_subs,
+  merged_local_int$subcluster_epi,
+  "other"
+)
+
+umap_epi <- DimPlot(
+  merged_local_int,
+  group.by = "epi_colors",
+  cols = cols_use,
+  label = TRUE,
+  raster = F,
+  stroke.size = 0.8
+)
+
+```
+
+Great, I'm gonna go with that.
+
+Let's investigate what differentiates these structures from others.
+
+```{r}
+epi_subs <- c("Epidermis_1", "Epidermis_2", "Epidermis_3",
+              "Epidermis_4")
+
+Idents(merged_local_int) <- "subcluster_epi"
+
+markers_epi1 <- FindMarkers(
+  merged_local_int,
+  ident.1 = "Epidermis_1",
+  ident.2 = setdiff(epi_subs, "Epidermis_1"),
+  min.pct = 0.25
+)
+
+markers_epi2 <- FindMarkers(
+  merged_local_int,
+  ident.1 = "Epidermis_2",
+  ident.2 = setdiff(epi_subs, "Epidermis_2"),
+  min.pct = 0.25
+)
+
+markers_epi3 <- FindMarkers(
+  merged_local_int,
+  ident.1 = "Epidermis_3",
+  ident.2 = setdiff(epi_subs, "Epidermis_3"),
+  min.pct = 0.25
+)
+
+markers_epi4 <- FindMarkers(
+  merged_local_int,
+  ident.1 = "Epidermis_4",
+  ident.2 = setdiff(epi_subs, "Epidermis_4"),
+  min.pct = 0.25
+)
+
+```
+
+Let's look
+
+```{r}
+View(markers_epi1)
+View(markers_epi2)
+View(markers_epi3)
+View(markers_epi4)
+```
+
+Overall there's nothing really enriched in these. They're boardly expressed genes in this cluster which might be slightly upregulated here or there but nothing to really suggest anything as to cell types. I think the 30,000 cells contained in this cluster are more of less the same transcriptomically. Of course, they are actually different, but I would need to look at all the expected markers for that.

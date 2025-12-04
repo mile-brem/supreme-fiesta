@@ -1,0 +1,255 @@
+# Preprocessing steps
+
+We will now take our filtered object and move to the preprocessing steps of seurat. 
+
+So far, we have 1. run cell ranger to turn reads into mapping genomic count matrixs, 2. read in the 10X cellranger outputs 3. explored the data and performed filtering based on quality metrics.
+
+We will now move forward to normalisation and regressing out unwanted variation. 
+
+One important thing to note is that classical normalisation workflows account for:
+1. Scaling where cells are scaled by their numbers of UMIs so that all cells have the same number of UMIs. In our dataset, we won't want to do this as stem cells in a hypertranscriptomic state will likely have high number of UMIs and we don't want to lose this biological signal. I.e., absolute counts are the result of biological processes rather than technical.
+
+2. Transformation where we apply the same function to each individual measurement. e.g. log transform and square root transform.
+
+Normalisation is intended to combat differences in:
+1. Sequencing depth: Two cells could be the same, but if it has been sequenced twice as deeply then it will appear to have twice the expression, even if it doesn't biologically.
+2. Gene length: Shorter genes tend to look more highly expressed, but in relatity, they likely aren't. This only really affects full length gene sequencing.
+
+In this analysis, there is literature to suggest that absolute scaling is more beneficial when stem cell/hypertranscriptomic cells are concerned. I can do both, SCTransform (global scaling) and only log1p transform (absolute scaling). I provide the code to attain this in the first section. The analysis for the moment hasn't. explored this.
+
+## Transform the data by log1ptransform
+
+This snipet adds another assay to the data which is log1p transformed. I've skipped this for the moment, as it will balloon the size of files for no reason.
+
+```{r}
+# Here we create a new assay object to save for later
+#filtered_gene_seurat[["logdata"]] <- CreateAssay5Object(
+#  counts = filtered_gene_seurat[["RNA"]]$counts,
+#  data   = log1p(filtered_gene_seurat[["RNA"]]$counts))
+
+#Save the dataset at the point if needed
+#saveRDS(filtered_gene_seurat, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251009_72hpa-/single_cell_data/03_seurat/fgs_preprocessing.RDS")
+```
+
+## Sources of variance
+
+This is a bit of a tangent and commented out for the moment, but it is good practice to explore if there are any sources of variation in the data. We can explore cell cycling or mitochondial genes for example and regress these out. (when they're labelled in the genome)
+
+There are several sources of variation which this section talks about. Can skip this to the PCA plot below as most of this isn't relevant at the moment.
+
+I will come back to this when I'm able to look at mitochondrial genes.
+
+### Evaluating sources of variation
+
+I want to first find where there are sources of variation in our data. I coulld look to cell cycle genes or mitochondrial genes. However, I don't currently have access to these. Therefore, I will turn to the metadata I do have. Individuals, replicate and chemistry.
+
+I think the replicate will be the biggest source of variation.
+
+```{r, message=FALSE, echo=FALSE, warning=FALSE}
+# Normalise the data
+seurat_invest <- NormalizeData(filtered_gene_seurat)
+
+# Identify the most variable genes
+seurat_invest <- FindVariableFeatures(seurat_invest, 
+                     selection.method = "vst",
+                     nfeatures = 5000, 
+                     verbose = FALSE)
+		     
+# Scale the counts
+seurat_invest <- ScaleData(seurat_invest)
+
+# Identify the 15 most highly variable genes
+ranked_variable_genes <- VariableFeatures(seurat_invest)
+top_genes <- ranked_variable_genes[1:15]
+
+# Plot the average expression and variance of these genes
+# With labels to indicate which genes are in the top 15
+p <- VariableFeaturePlot(seurat_invest)
+LabelPoints(plot = p, points = top_genes, repel = TRUE)
+```
+
+Let's look at trying to do cell cycle scoring
+
+```{r}
+seurat_invest <- CellCycleScoring(
+  object = seurat_invest,
+  s.features = s_genes$SYMBOL,
+  g2m.features = g2m_genes$SYMBOL,
+  set.ident = TRUE
+)
+```
+
+Lots of genes :)
+
+```{r, message=FALSE}
+#clean the data slightly, need to sort timepoint chronologically
+seurat_invest@meta.data <- seurat_invest@meta.data %>% 
+  mutate(timepoint = fct_relevel(timepoint, "0_hpa", "0_hpa_tail", "6_hpa", "12_hpa", "48_hpa",
+                                 "72_hpa", "72_hpa_only_regen", "168_hpa", "336_hpa"))
+
+# Perform PCA
+seurat_invest <- RunPCA(seurat_invest)#
+
+# Plot the PCA colored by cell cycle phase
+DimPlot(seurat_invest,
+        reduction = "pca",
+        group.by= "Phase",
+        split.by = "Phase")
+
+
+# Plot the PCA colored by replicate
+replicate <- DimPlot(seurat_invest,
+       reduction = "pca",
+        group.by= "replicate",
+        split.by = "replicate")
+
+# Plot the PCA colored by replicate
+ident_PCA <- DimPlot(seurat_invest,
+        reduction = "pca",
+        group.by= "orig.ident",
+        split.by = "orig.ident")
+
+# Plot the PCA colored by replicate
+chemistry <- DimPlot(seurat_invest,
+        reduction = "pca",
+        group.by= "chemistry",
+       split.by = "chemistry")
+
+timepoint <- DimPlot(seurat_invest,
+                     reduction = "pca",
+                     group.by = "timepoint",
+                     split.by = "timepoint")
+
+replicate
+ident_PCA
+chemistry
+timepoint
+```
+
+It seems that PC 1 and PC 2 are not driven by replicate or the other variables. There must be something else in the data driving these components. Curiously, it is not convincingly timepoint either.
+
+Here if I had cell cycle genes or mitochondrial genes available, we could drive this.
+
+
+### UMAP visualisation
+
+```{r}
+
+#seurat_invest <- RunUMAP(seurat_invest,
+#                                dims = 1:50, 
+#                                reduction = "pca")
+
+#umap_oi <- DimPlot(seurat_invest,
+#        group.by = "orig.ident")
+
+#umap_time <- DimPlot(seurat_invest,
+#                     group.by = "timepoint")
+
+#umap_group <- DimPlot(seurat_invest,
+#                     group.by = "group")
+
+#umap_chemistry <- DimPlot(seurat_invest,
+#                     group.by = "chemistry")
+
+#umap_replicate <- DimPlot(seurat_invest,
+#                     group.by = "replicate")
+
+#Save that object if needed
+#saveRDS(seurat_invest, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/01_seurat/seuart_invest.RDS")
+```
+
+## Downsampling the 72 hour timepoint
+
+Unfortunately, it is unclear why, there are a massive amount of cells in the 72 hour timepoint from the new dataset. After discussion, it is likely there are real cells. We will downsample this sample to a target number of cells. In this case, I will downsample to the median cell number that occurs for the other cells in the replicate it originates from.
+
+```{r}
+# Extract metadata
+meta <- filtered_gene_seurat@meta.data
+
+# Identify the target sample
+target_sample <- "72_hpa_segment_regen_3"
+
+# Subset metadata to only replicate "C"
+rep_c_meta <- meta %>%
+  filter(replicate == "C")
+
+# Compute median number of cells across all other samples in replicate C
+other_samples <- rep_c_meta %>%
+  filter(ident != target_sample) %>% 
+  group_by(ident) %>% 
+  summarise(n_cells = n())
+median_cells <- median(other_samples$n_cells)
+
+cat("Median cells in other replicate C samples:", median_cells, "\n")
+
+# Get cells from the target sample
+target_cells <- WhichCells(filtered_gene_seurat, expression = (ident == target_sample))
+
+# Downsample to median number
+if(length(target_cells) > median_cells){
+  cells_to_keep_target <- sample(target_cells, median_cells)
+} else {
+  cells_to_keep_target <- target_cells
+}
+
+# Get all other cells (not target sample)
+other_cells <- WhichCells(filtered_gene_seurat, expression = (ident != target_sample))
+
+# Combine
+cells_to_keep <- c(other_cells, cells_to_keep_target)
+
+# Subset Seurat object
+filtered_gene_seurat_down <- subset(filtered_gene_seurat, cells = cells_to_keep)
+
+#Cells removed
+cells_removed <- ncol(filtered_gene_seurat) - ncol(filtered_gene_seurat_down)
+
+cat("Number of cells removed:", cells_removed, "\n")
+```
+
+This removed 38228 cells from the problematic sample. 
+
+Cells plotted per sample again
+
+```{r}
+nCells_filtered <- filtered_gene_seurat_down@meta.data %>% 
+  ggplot(aes(x = ident, fill = ident)) +
+  geom_bar() +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  ggtitle("Number of cells detected per sample - Filtered") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1))
+```
+
+```{r}
+pdf(file = "~/desktop/Downsample_cells.pdf")
+print(nCells_filtered)
+dev.off()
+```
+
+## Normalisation
+
+Here I move to normalisation on the object that I will carry forward. I will use SCTransform which:
+1. Replaces NormalizeData(), Scaledata(), FindVaraibleFeatures()
+2. Uses Pearson residuals for transformation instead of log transformations.
+
+Note that I didn't do so above as it is recommended to explore the data using a simple transformation as pearson's residuals can alter the data in a way that is hard to interpret. SCTransform is used instead as there are issues surrounding simple transformation as it affects genes differently depending on how abundant they are. There is also substantial imbalance in how variance is introduced.
+
+Before, I did this with 3000, but I have upped it to 5000.
+
+```{r}
+#rm(seurat_invest)
+#Split seurat object by identity to perform SCT on all samples individually
+split_seurat <- SplitObject(filtered_gene_seurat_down, split.by = "orig.ident")
+
+for (i in 1:length(split_seurat)) {
+    split_seurat[[i]] <- SCTransform(split_seurat[[i]], vst.flavor = "v2", variable.features.n = 5000)
+}
+
+saveRDS(split_seurat, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/split_seurat.RDS")
+
+```
+
+Each sample has now been normalised using SCTTransform. Split object is then passed to the next two sections.
+
+

@@ -1,0 +1,41 @@
+# Natural log of 2 investigation
+
+In the dataset, I saw some odd things. Specifically that some genes were the same 0.69 value for all cells. This is the natural log of 2. Therefore, it has likely been induced where all cells have a value of 1 and 1 is added in logp1 stage
+
+## Looking for cells of expression/counts 1
+
+Looking at raw counts
+
+```{r}
+rna_counts <- GetAssayData(merged_local_int, slot = "counts", assay = "RNA")
+
+# Genes where all entries are exactly 1
+genes_all_ones_rna <- rownames(rna_counts)[Matrix::rowSums(rna_counts == 1) == ncol(rna_counts)]
+
+genes_all_ones_rna
+length(genes_all_ones_rna)
+```
+
+The SCT counts asssay
+
+```{r}
+sct_counts <- GetAssayData(merged_local_int, slot = "counts", assay = "SCT")
+
+genes_all_ones_sct <- rownames(sct_counts)[Matrix::rowSums(sct_counts == 1) == ncol(sct_counts)]
+
+genes_all_ones_sct
+length(genes_all_ones_sct)
+```
+
+Hmm none are. I'm going to look at SCTransform to see how many genes present with that 0.69 number
+
+```{r}
+sct_data <- GetAssayData(merged_local_int, slot = "scale.data", assay = "SCT")
+
+genes_all_odd_sct <- rownames(sct_data)[Matrix::rowSums(sct_data == 0.693147180559945) == ncol(sct_data)]
+
+genes_all_odd_sct
+length(genes_all_odd_sct)
+```
+
+0.693147180559945

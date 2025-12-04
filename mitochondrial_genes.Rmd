@@ -1,0 +1,148 @@
+# GO Terms
+
+Here I now have access to GO terms so I'm going to 
+
+1. Access mitochondiral genes
+2. Find Go terms for my markers
+
+The mitochondrial genes and cell cycling genes are not annotated or known in Platynereis (well, yes and no). However, we have an interpro scan of the genes and their predicted GO terms. Interpro has GO terms for mitochondria and cell cycling.
+
+I will extract all genes related to these terms
+
+## Read in files
+
+```{r}
+#Firsttly, read in the basic terms
+gid2gene <- read_tsv("/Volumes/MILES_SDD/00_data/00.01_genomes/Go_terms/GO_Oleg/gname.go")
+gid2go   <- read_tsv("/Volumes/MILES_SDD/00_data/00.01_genomes/Go_terms/GO_Oleg/gid.go")
+```
+
+## Extract mitochondrial genes and cell cycling genes
+
+```{r}
+# Join GO terms with gene IDs for one massive file!
+gene_go <- gid2gene %>%
+  inner_join(gid2go, by = "GID")
+
+# Cell cycle and its child terms
+cell_cycle_terms <- c(
+  "GO:0007049",  # cell cycle
+  "GO:0044786",  # cell cycle DNA replication
+  "GO:0051321",  # meiotic cell cycle
+  "GO:0045787",  # positive regulation of cell cycle
+  "GO:0033260",  # nuclear DNA replication
+  "GO:0000278",  # mitotic cell cycle
+  "GO:0051726",  # regulation of cell cycle
+  "GO:0022402",  # cell cycle process
+  "GO:0045786"   # negative regulation of cell cycle
+)
+
+# Mitochondrion and its child terms
+mitochondrion_terms <- c(
+  "GO:0005739",  # mitochondrion
+  "GO:1990180",  # mitochondrial tRNA 3'-end processing
+  "GO:0090616",  # mitochondrial mRNA 3'-end processing
+  "GO:0070150",  # mitochondrial glycyl-tRNA aminoacylation
+  "GO:0051882",  # mitochondrial depolarization
+  "GO:0070152",  # mitochondrial isoleucyl-tRNA aminoacylation
+  "GO:0000262",  # mitochondrial chromosome
+  "GO:0042775",  # mitochondrial ATP synthesis coupled electron transport
+  "GO:0070903",  # mitochondrial tRNA thio-modification
+  "GO:0031019",  # mitochondrial mRNA editing complex
+  "GO:0070901"   # mitochondrial tRNA methylation
+)
+# Extract cell cycle and mitochondrion genes
+cell_cycle_genes <- gene_go %>%
+  filter(GO %in% cell_cycle_terms) %>%
+  distinct(SYMBOL, GENENAME, GID)
+
+mitochondrion_genes <- gene_go %>%
+  filter(GO %in% mitochondrion_terms) %>%
+  distinct(SYMBOL, GENENAME, GID)
+```
+
+Let's look at specific compartments of cell cycling
+
+```{r}
+# S-phase genes
+s_genes <- gene_go %>%
+  filter(GO %in% c("GO:0044786", "GO:0033260")) %>%
+  distinct(SYMBOL, GENENAME, GID)
+
+# G2/M-phase genes
+g2m_genes <- gene_go %>%
+  filter(GO == "GO:0000278") %>%
+  distinct(SYMBOL, GENENAME, GID)
+```
+
+We can then write these if needed
+
+```{r}
+write_csv(cell_cycle_genes, file = "/Volumes/MILES_SDD/00_data/00.01_genomes/cell_cycling_genes.csv")
+write_csv(mitochondrion_genes, file = "/Volumes/MILES_SDD/00_data/00.01_genomes/mitocondrion_genes.csv")
+write_csv(s_genes, file = "/Volumes/MILES_SDD/00_data/00.01_genomes/s_genes.csv")
+write_csv(g2m_genes, file = "/Volumes/MILES_SDD/00_data/00.01_genomes/g2m_genes.csv")
+```
+
+## Searching for the mitochondiral genome
+
+In biology, mitochondrial genes are located on the mitochondiral genome. I will look to see if all the 318 genes localise to a particular contig.
+
+```{r, message=FALSE}
+library(rtracklayer)
+
+gff <- readGFF("/Volumes/MILES_SDD/00_data/00.01_genomes/pdu_genome_2025_crref/genes/genes.gtf")
+```
+
+And visualise this maybe
+
+```{r}
+# Keep only gene features
+mito_with_contig <- mitochondrion_genes %>%
+  left_join(
+    gff %>% filter(type == "gene") %>% select(seqid, gene_id),
+    by = c("GENENAME" = "gene_id")
+  )
+
+mito_counts <- mito_with_contig %>%
+  count(seqid, sort = TRUE)
+
+mito_counts
+
+# Check the result
+head(mito_with_contig)
+mito_counts
+
+
+ggplot(mito_counts, aes(x = reorder(seqid, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(x = "Contig", y = "Number of mitochondrial genes",
+       title = "Mitochondrial genes per contig")
+```
+
+Hmm that's interesting. They're a little spread out but mostly in chromosome 1. Odd. I don't believe most of these are chromosome related either.
+
+Just to double check, I'm going to look these up
+
+```{r}
+prot_lookup <- read_tsv(
+  "/Volumes/MILES_SDD/00_data/00.01_genomes/LUT/VIE1_merged_2025_11_LUT.tab",
+  col_names = c("GENENAME", "PROTEIN_INFO")
+)
+```
+
+
+```{r}
+cell_cycle_proteins <- cell_cycle_genes %>%
+  left_join(prot_lookup, by = "GENENAME") %>%
+  select(GID, SYMBOL, GENENAME, PROTEIN_INFO)
+```
+
+```{r}
+mitochondrion_proteins <- mitochondrion_genes %>%
+  left_join(prot_lookup, by = "GENENAME") %>%
+  select(GID, SYMBOL, GENENAME, PROTEIN_INFO)
+```
+
+Okay, it looks like both of them are pretty accurate

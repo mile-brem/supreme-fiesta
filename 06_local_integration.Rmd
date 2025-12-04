@@ -1,0 +1,317 @@
+# Local integration focused
+
+In the previous attempt, I had not downsampled, but found that CCA was the best strategy. Therefore, I'm doing this again.
+
+To explain the strategy, I will select 5000 highly variable features that are common to all datasets. I will integrate the 72 hour timepoint on these 5000 features using CCA (not rpca). I will then merge all the datasets together on these 5000 features.
+
+Note that while I merge on these 5000 features, this is only for determining clustering/celltypes. Analysis would be performed on SCTransform which contains features (genes) extending beyond those 5000 features.
+
+Here we go.
+
+## Load in data
+
+First thing I do is load in split seurat which is a list of samples, each SCTransformed separately.
+
+```{r}
+#split_seurat <- readRDS(file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/01_seurat/split_seurat.RDS")
+```
+
+Now we assess the variable features common to all
+
+```{r}
+# Find variable features calculated before. 
+var_features <- SelectIntegrationFeatures(object.list = split_seurat, nfeatures = 5000) 
+```
+
+Now we subset to the 72 hour timepoint that we're focused on integrating.
+
+```{r}
+#Subset split seurat
+hpa_72_list <- split_seurat[c("72_hpa_segment_regen_1", "72_hpa_segment_regen_2", "72_hpa_segment_regen_3")]
+```
+
+## Pre-integration 72 hours only
+
+```{r}
+#Merge for that list
+unintegrated_72 <- merge(
+  x = hpa_72_list[[1]],
+  y = hpa_72_list[-1],
+  add.cell.ids = names(hpa_72_list) 
+)
+```
+
+```{r}
+#Processing
+
+VariableFeatures(unintegrated_72) <- var_features
+
+unintegrated_72 <- RunPCA(
+  unintegrated_72,
+  assay = "SCT",
+  npcs = 100
+)
+
+unintegrated_72 <- RunUMAP(
+  unintegrated_72,
+  dims = 1:50,
+  reduction = "pca"
+)
+```
+
+And quick plotting
+
+```{r}
+umap_unintegrated_72_time <- unintegrated_72 %>% 
+  DimPlot(reduction = "umap", group.by = "timepoint", raster = F) +
+  ggtitle("Unintegrated 72 hpa - Timepoint")
+  
+
+umap_unintegrated_72_chem <- unintegrated_72 %>% 
+  DimPlot(reduction = "umap", group.by = "chemistry", raster = F) +
+  ggtitle("Unintegrated 72 hpa - Chemistry")
+
+umap_unintegrated_72_rep <- unintegrated_72 %>% 
+  DimPlot(reduction = "umap", group.by = "replicate", raster = F)  +
+  ggtitle("Unintegrated 72 hpa - Replicate")
+
+umap_unintegrated_72_sample <- unintegrated_72 %>% 
+  DimPlot(reduction = "umap", group.by = "orig.ident", raster = F)  +
+  ggtitle("Unintegrated 72 hpa - Sample")
+
+
+pdf(file = "plots/unintegrated/umaps_72.pdf",
+    height = 8,
+    width = 11)
+print(umap_unintegrated_72_time)
+print(umap_unintegrated_72_chem)
+print(umap_unintegrated_72_rep)
+print(umap_unintegrated_72_sample)
+dev.off()
+```
+
+
+## Integration via CCA
+
+Now we move to integrating this object specifically.
+
+```{r}
+hpa_72_CCA <- PrepSCTIntegration(
+  object.list = hpa_72_list,
+  anchor.features = var_features
+)
+
+hpa_72_anchors <- FindIntegrationAnchors(
+  object.list = hpa_72_CCA,
+  normalization.method = "SCT",
+  anchor.features = var_features,
+  dims = 1:50
+)
+
+hpa_72_CCA <- IntegrateData(
+  anchorset = hpa_72_anchors,
+  normalization.method = "SCT",
+  dims = 1:50
+)
+```
+
+That should be our integrated object at hpa_72. Just some quick vis to assess integration here. Unintegrated is in previous markdown.
+
+```{r}
+#PCA
+hpa_72_CCA <- RunPCA(
+  hpa_72_CCA,
+  assay = "integrated",
+  npcs = 50
+)
+
+#UMAP
+hpa_72_CCA <- RunUMAP(hpa_72_CCA,
+                         reduction = "pca",
+                         dims = 1:50,
+                         reduction.name = "umap")
+```
+
+```{r}
+# Create the UMAP dimplots
+
+hpa_72_CCA_chem <- DimPlot(hpa_72_CCA,
+                             reduction = "umap",
+                             group.by = "chemistry") +
+  ggtitle("Integrated - Chemistry")
+
+hpa_72_CCA_rep <- DimPlot(hpa_72_CCA,
+                             reduction = "umap",
+                             group.by = "replicate") +
+  ggtitle("Integrated - Replicate")
+
+hpa_72_CCA_rep
+hpa_72_CCA_chem
+```
+
+
+Note, this is one single merged object rather than a list of samples We now take this and slot this back to our split_seurat essentially. First I subset the other samples and add a "dummy" integrated assay which just comprises the 3000 features.
+
+```{r}
+# First we get the other samples in a different list:
+other_samples <- split_seurat[!names(split_seurat) %in% c("72_hpa_segment_regen_1", "72_hpa_segment_regen_2", "72_hpa_segment_regen_3")]
+
+# Create a new "Integrated" assay from the SCT assay, subset to var_features
+other_samples <- lapply(other_samples, function(obj) {
+  # Take intersection to ensure features exist
+  feats <- intersect(var_features, rownames(obj[["SCT"]]))
+  
+  # Extract the SCT assay data for those features
+  sct_assay <- GetAssay(obj, "SCT")
+  sct_data <- GetAssayData(sct_assay, layer = "data")[feats, ]
+  
+  # Create a new assay
+  integrated_assay <- CreateAssayObject(data = sct_data)
+  
+  # Add it to the object
+  obj[["integrated"]] <- integrated_assay
+  
+  # Return the updated object
+  return(obj)
+})
+```
+
+I then combine these into one great big list!
+
+```{r}
+all_samples <- c(other_samples, hpa_72_CCA)
+
+#Set the active assay to the integrated assay just to double check
+all_samples <- all_samples %>% 
+  map(~ {
+    DefaultAssay(.) <- "integrated"
+    .
+  })
+```
+
+And now merged on that object.
+
+```{r}
+#li for local integration
+merged_local_int <- merge(
+  x = all_samples[[1]],
+  y = all_samples[-1]
+)
+
+VariableFeatures(merged_local_int) <- var_features
+
+# Make sure features overlap
+common_feats <- intersect(rownames(merged_local_int[["integrated"]]), rownames(merged_local_int[["SCT"]]))
+
+# Copy scale.data from SCT to integrated
+merged_local_int[["integrated"]]@scale.data <- GetAssayData(merged_local_int[["SCT"]], slot = "scale.data")[common_feats, ]
+
+```
+
+Now, this is all the samples with only the 72 hour time point integrated and all other samples not integrated.
+
+Let's move to move to some basic steps from here.
+
+```{r}
+#PCA
+merged_local_int <- RunPCA(
+  merged_local_int,
+  assay = "integrated",
+  npcs = 100
+)
+
+#UMAP
+merged_local_int <- RunUMAP(merged_local_int,
+                         reduction = "pca",
+                         dims = 1:50,
+                         reduction.name = "umap")
+```
+
+And now vis:
+
+```{r}
+#Fixing levels
+merged_local_int@meta.data <- merged_local_int@meta.data %>% 
+  mutate(timepoint = fct_relevel(timepoint, "0_hpa", "0_hpa_tail", "6_hpa", "12_hpa", "24_hpa", "48_hpa",
+                                 "72_hpa", "72_hpa _only_regen", "168_hpa", "336_hpa"))
+
+# Create the UMAP dimplot
+merged_local_int_umap_time <- DimPlot(merged_local_int,
+                             reduction = "umap",
+                             group.by = "timepoint",
+                             raster = F,
+                             pt.size = .001) + 
+  ggtitle("Intergrated - Timepoints")
+
+merged_local_int_umap_chem <- DimPlot(merged_local_int,
+                             reduction = "umap",
+                             group.by = "chemistry",
+                             raster = F,
+                             pt.size = .001) +
+  ggtitle("Integrated - Chemistry")
+
+merged_local_int_umap_rep <- DimPlot(merged_local_int,
+                             reduction = "umap",
+                             group.by = "replicate",
+                             raster = F,
+                             pt.size = .001) +
+  ggtitle("Integrated - Replicate")
+
+merged_local_int_umap_rep
+merged_local_int_umap_chem
+merged_local_int_umap_time
+```
+Hmm okay. I think this is somewhat better than the unintegrated, but there are some areas which worry me that it is technical variation potentially.
+
+```{r}
+pdf(file = "plots/integrated/umaps_local_integration.pdf",
+    height = 8,
+    width = 11)
+print(merged_local_int_umap_rep)
+print(merged_local_int_umap_chem)
+print(merged_local_int_umap_time)
+dev.off()
+```
+
+
+```{r}
+saveRDS(merged_local_int, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_local_int.RDS")
+```
+
+Let's also see how alex's works on this again
+
+```{r}
+merged_local_int_umap@meta.data <- merged_local_int_umap@meta.data |> 
+  left_join(old_meta[, c("cells", "cell_type_alex")],
+            by = c("cells" = "cells"))
+
+merged_local_int_umap@meta.data$cell_type_alex[is.na(merged_local_int_umap@meta.data$cell_type_alex)] <- "New"
+
+#Did something weird
+rownames(merged_local_int_umap@meta.data) <- merged_local_int_umap@meta.data$cells
+```
+
+And then plot:
+
+```{r}
+# Extract UMAP embeddings + metadata
+umap_df <- Embeddings(merged_local_int_umap, "umap") %>% as.data.frame()
+umap_df$cell_type_alex <- merged_local_int_umap$cell_type_alex
+umap_df$alpha_val <- ifelse(umap_df$cell_type_alex == "New", 0.03, 1)
+
+# Make the plot directly with ggplot2
+alex_cells_corrected <- ggplot(umap_df, aes(x = umap_1, y = umap_2, color = cell_type_alex, alpha = alpha_val)) +
+  geom_point(size = 0.5) +
+  scale_alpha_identity() +
+  scale_color_manual(values = {
+    all_groups <- unique(umap_df$cell_type_alex)
+    base_colors <- scCustomize::DiscretePalette_scCustomize(length(all_groups), palette = "varibow")
+    names(base_colors) <- all_groups
+    base_colors["New"] <- "grey50"
+    base_colors
+  }) +
+  theme_minimal() +
+  guides(
+    color = guide_legend(override.aes = list(size = 4))  
+  )
+```

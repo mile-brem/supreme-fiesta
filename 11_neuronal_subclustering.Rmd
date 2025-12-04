@@ -1,0 +1,3193 @@
+
+# Sub-clustering
+
+## Neuronal subcluster attempt 1
+
+The clusters I will take are:
+"Neuronal"
+"Neuropeptigeric_neurones"
+"Kremen+_cluster"
+"Neuronal_3"
+"Vasotocin–neurophysin-producing_sensory–neurosecretory_cells"
+"hh+_population"
+"Neural_progenitor_1"
+"Neural_progenitor_2"
+
+
+```{r}
+neuronal_celltypes <- c("Neuronal", "Neuropeptigeric_neurones", 
+                        "Collar_receptor_cells", "Neuronal_3", "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells", "hh+_population", "Neural_progenitor_1", "Neural_progenitor_2")
+
+subcluster_neuronal <- subset(
+  merged_local_int,
+  idents = neuronal_celltypes
+)
+
+DefaultAssay(subcluster_neuronal) <- "integrated"
+```
+
+We now have our object and we basically get to run through the process again.
+
+```{r}
+#run PCA
+subcluster_neuronal <- RunPCA(subcluster_neuronal, npcs = 100, verbose = FALSE)
+
+# Plot the elbow plot
+ElbowPlot(object = subcluster_neuronal, 
+          ndims = 100)
+```
+
+```{r}
+# Determine percent of variation associated with each PC
+pct <- subcluster_neuronal[["pca"]]@stdev / sum(subcluster_neuronal[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5
+co1 <- which(cumu > 75 & pct < 5)[1]
+
+co1
+
+# Determine the difference between variation of PC and subsequent PC
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation
+pcs <- min(co1, co2)
+
+pcs
+```
+
+
+```{r}
+#Run the UMAP
+subcluster_neuronal <- RunUMAP(subcluster_neuronal, dims = 1:60, verbose = FALSE)
+```
+
+```{r}
+#Clustering
+
+# Determine the K-nearest neighbor graph
+subcluster_neuronal <- FindNeighbors(object = subcluster_neuronal, 
+                                dims = 1:60,
+                                k.param = 30,
+                                n.trees = 400)
+
+
+kNN_sub <- pheatmap(merged_local_int@graphs$integrated_nn[1:200, 1:200],
+         col = c("white", "black"), border_color = "grey90", main = "KNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("kNN graph of merged_seurat_rpca")
+
+sNN_sub <- pheatmap(merged_local_int@graphs$integrated_snn[1:200, 1:200],
+         col = colorRampPalette(c("white", 'red', "black"))(100),
+         border_color = "grey90", main = "SNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("sNN graph of merged_seurat_rpca")
+
+kNN_sub
+sNN_sub
+```
+
+```{r}
+# Determine the clusters for various resolutions                                
+subcluster_neuronal <- FindClusters(object = subcluster_neuronal,
+                               resolution = seq(0.4, 0.8, by = 0.05),
+                               algorithm = 4)
+```
+
+Great! Let's have a look at them.
+
+```{r}
+library(clustree)
+clustertree <- clustree(subcluster_neuronal, prefix = "integrated_snn_res.")
+```
+
+```{r}
+library(bluster)
+
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_neuronal@meta.data), value = TRUE)
+
+# Loop over each resolution column
+silhouette_results <- lapply(resolution_cols, function(col_name) {
+  clust <- subcluster_neuronal@meta.data[[col_name]]
+  emb <- Embeddings(subcluster_neuronal, "pca")
+  sil <- approxSilhouette(emb, clusters = clust)
+  
+  # Extract resolution from column name (e.g., "RNA_snn_res.0.8" -> "0.8")
+  resolution <- sub("integrated_snn_res\\.", "", col_name)
+  
+  data.frame(
+    cell = rownames(emb),
+    resolution = resolution,
+    silhouette_width = sil$width,
+    cluster = as.factor(sil$cluster),
+    row.names = NULL,
+    closest_other = as.factor(sil$other)
+  )
+})
+
+# Combine allresults into one dataframe
+combined_sil_df <- bind_rows(silhouette_results)
+
+# Ensure resolution is treated as an ordered numeric for proper sorting
+combined_sil_df <- combined_sil_df %>%
+  mutate(resolution = factor(resolution, levels = sort(unique(as.numeric(resolution)))))
+
+# Plot: Boxplot per cluster, faceted by resolution
+all_sil <- ggplot(combined_sil_df, aes(x = cluster, y = silhouette_width, fill = cluster)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  facet_wrap(~ resolution, scales = "free_x") +
+  labs(
+    title = "Silhouette Width per Cluster across Resolutions",
+    x = "Cluster",
+    y = "Silhouette Width"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+# Compute confusion-like tables per resolution
+confusion_per_res <- combined_sil_df %>%
+  mutate(
+    correct = silhouette_width > 0,
+    assigned = cluster,
+    closest = ifelse(correct, as.character(cluster), as.character(closest_other))
+  ) %>%
+  count(resolution, assigned, closest) %>%
+  group_by(resolution, assigned) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    # Convert to numeric-safe factors per resolution
+    assigned = factor(assigned, levels = sort(unique(as.numeric(as.character(assigned))))),
+    closest = factor(closest, levels = sort(unique(as.numeric(as.character(closest)))))
+  )
+# 
+heatmap_sil <- ggplot(confusion_per_res, aes(x = assigned, y = closest, fill = prop)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "C") +
+  facet_wrap(~ resolution, scales = "free") +
+  #coord_equal() +
+  labs(
+    title = "Cluster Confusion (Assigned vs Closest Other Cluster)",
+    x = "Assigned Cluster",
+    y = "Closest Cluster (if Silhouette < 0)",
+    fill = "Proportion"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+all_sil
+heatmap_sil
+```
+
+
+And then the full map vises
+
+```{r}
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_neuronal@meta.data), value = TRUE)
+
+# Loop over resolutions and generate DimPlots
+umap_plots_subclus <- lapply(resolution_cols, function(col_name) {
+  resolution_label <- sub("integrated_snn_res\\.", "", col_name)
+  
+  p <- DimPlot(
+    subcluster_neuronal,
+    reduction = "umap",
+    group.by = col_name,
+    label = TRUE,
+    label.size = 4,
+    raster = F,
+    stroke.size = 0.5
+  ) +
+    ggtitle(paste("Resolution - integrated", resolution_label)) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  
+  return(p)
+})
+```
+
+Let's see
+
+```{r}
+umap_plots_subclus
+```
+
+hmm, 0.4 seems the best
+
+```{r}
+pdf(file = "~/desktop/subclus_clusters_0.45.pdf",
+    width = 16,
+    height = 8)
+print(umap_plots_subclus[[2]])
+dev.off()
+```
+
+
+Let's also look at the timepoints
+
+```{r}
+subcluster_umap_time <- DimPlot(
+  subcluster_neuronal,
+  reduction = "umap",
+  group.by = "timepoint",
+  shuffle = T
+)
+```
+
+```{r}
+pdf(file = "~/desktop/subclus_time_split.pdf",
+    width = 14,
+    height = 8)
+print(subcluster_umap_time)
+dev.off()
+```
+
+
+```{r}
+Idents(subcluster_neuronal) <- "integrated_snn_res.0.45"
+DefaultAssay(subcluster_neuronal) <- "SCT"
+```
+
+```{r}
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells_sub <- FetchData(subcluster_neuronal, 
+                     vars = c("integrated_snn_res.0.45", "timepoint")) %>%
+        dplyr::count(integrated_snn_res.0.45, timepoint)
+```
+
+```{r}
+# Barplot of number of cells per cluster by sample
+cells_per_sample <- ggplot(n_cells_sub, aes(x=integrated_snn_res.0.45, y=n, fill=timepoint)) +
+    geom_bar(position=position_dodge(), stat="identity") +
+  theme_minimal()
+    #geom_text(aes(label=n), vjust = -.2, position=position_dodge(1))
+
+cells_per_sample
+```
+```{r}
+# Barplot of proportion of cells in each cluster by sample
+prop_cell_per_cluster <- ggplot(subcluster_neuronal@meta.data) +
+    geom_bar(aes(x=integrated_snn_res.0.45, fill=timepoint), position=position_fill()) +
+  ggtitle("Proportion of cells per cluster by timepoint - resolution 0.4")
+
+prop_cell_per_cluster
+```
+```{r}
+# Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nCount_SCT", "nFeature_SCT", "log10GenesPerUMI")
+
+metrics_plot <- FeaturePlot(subcluster_neuronal,
+            reduction = "umap", 
+            features = metrics,
+            stroke.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10')
+```
+
+```{r}
+metrics_plot
+```
+
+We can then proceed to finding the markers
+
+```{r}
+#Make double sure variable features are still here (features variable from all samples)
+subcluster_neuronal <- FindVariableFeatures(subcluster_neuronal)
+
+#Clear old SCT models oof
+#subcluster_neuronal[["SCT"]]@ <- list()
+
+#Prep the SCT object for DE 
+subcluster_neuronal <- PrepSCTFindMarkers(subcluster_neuronal, assay = "SCT", verbose = TRUE)
+```
+
+And then run the function:
+
+```{r}
+library(metap)
+clusters_sub <- levels(Idents(subcluster_neuronal))  # e.g., "0", "1", "2", etc.
+
+all_markers_sub <- lapply(clusters_sub, function(clust) {
+  FindConservedMarkers(
+    subcluster_neuronal,
+    ident.1 = clust,
+    grouping.var = "timepoint",
+    assay = "SCT",
+    only.pos = TRUE,
+    min.diff.pct = 0.25,
+    min.pct = 0.25,
+    logfc.threshold = 0.25,
+    recorrect_umi = FALSE
+  )
+})
+
+names(all_markers_sub) <- clusters_sub  # name each list element by cluster
+
+#saveRDS(all_markers_sub, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/all_markers_sub_neurone.RDS")
+```
+
+Great! We now have those markerssssss
+
+### Neuronal cell type annotation
+
+Generate the subset lookup
+
+```{r}
+lookup_subsets_sub_3 <- lapply(markers_3_list, function(cluster_df) {
+  #Move genes to columnms
+  cluster_df$gene <- rownames(cluster_df)
+  
+  # Extract genes from this cluster
+  cluster_genes <- cluster_df$gene
+  
+  # Subset lookup table to these genes
+  subset_df <- look_up_table[look_up_table$gene %in% cluster_genes, ]
+  
+  return(subset_df)
+})
+```
+
+```{r}
+lookup_subsets_11 <- look_up_table[look_up_table$gene %in% rownames(markers_11), ]
+```
+
+#### Top level cell types
+
+```{r}
+#Update the top level clusterings
+subcluster_neuronal$subcluster15 <- merged_local_int$cell_types_near_final[
+    Cells(subcluster_neuronal)
+]
+
+top_level_cells <- DimPlot(
+  subcluster_neuronal,
+  reduction = "umap",
+  group.by = "subcluster15",
+  label = T,
+  label.size = 3,
+  repel = T
+) + 
+  ggtitle("Main object annotations")
+```
+
+```{r}
+pdf("~/desktop/subcluster_top_level_annnoation.pdf",
+    height = 10,
+    width = 16)
+print(top_level_cells)
+dev.off()
+```
+
+This is the hetrogeneous population of neurones only really shown to express the 
+
+#### Cluster 1
+
+```{r}
+View(all_markers_sub[[1]])
+```
+
+```{r}
+View(lookup_subsets_sub[[1]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus1_markers <- as.character(rownames(all_markers_sub[[1]]))
+
+subclus1_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus1_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+This is a hard one, This cluster is really specific to 24, 48 & 72 hours. Perhaps I should look to stem cell markers here. I'll come back to it.
+
+#### Cluster 2
+
+```{r}
+View(all_markers_sub[[2]])
+```
+
+```{r}
+View(lookup_subsets_sub[[2]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus2_markers <- as.character(rownames(all_markers_sub[[2]]))
+
+subclus2_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus2_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus2_marker_plots
+```
+
+
+No real clue with the markers. It doesn't express other non-neuronal markers, so I'm some
+
+```{r}
+markers_2 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "3_1",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+
+#### Cluster 3
+
+```{r}
+View(all_markers_sub[[3]])
+```
+
+```{r}
+View(lookup_subsets_sub[[3]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus3_markers <- as.character(rownames(all_markers_sub[[3]]))
+
+subclus3_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus3_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+##### Cluster 3 subcluster
+
+```{r}
+subcluster_neuronal <- FindSubCluster(
+  object      = subcluster_neuronal,
+  cluster     = "3",
+  graph.name  = "integrated_snn", 
+  subcluster.name = "subcluster_3", 
+  resolution  = 0.2,
+  algorithm = 4 
+)
+```
+
+```{r}
+umap_subcluster3 <- DimPlot(
+  subcluster_neuronal,
+  reduction = "umap",
+  group.by = "subcluster_3",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 2.5
+) + NoLegend()
+```
+
+Finds four clusters
+
+```{r}
+markers_3_list <- list()
+
+markers_3_list[[1]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "3_1",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[2]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "3_2",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[3]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "3_3",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[4]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "3_4",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+3_1: High mobility group protein B2, RNA-binding protein 1, Hydrocephalus-inducing protein homolog, Histone H2A.V . I also know this is my pax6 + nk6 domains.
+```{r}
+#platygenesfrom findmarkers
+platymarkers3_1 <- c("VIE-hap1G00000027172", "VIE-hap1G00000002639", "VIE-hap1G00000000934",
+"VIE-hap1G00000004038",
+"VIE-hap1G00000025299",
+"VIE-hap1G00000031638",
+"VIE-hap1G00000031635",
+"VIE-hap1G00000022695",
+"VIE-hap1G00000013058",
+"VIE-hap1G00000026612",
+"VIE-hap1G00000030308",
+"VIE-hap1G00000008157",
+"VIE-hap1G00000028450",
+"VIE-hap1G00000015068",
+"VIE-hap1G00000028933",
+"VIE-hap1G00000014337",
+"VIE-hap1G00000007791",
+"VIE-hap1G00000015313",
+"VIE-hap1G00000026872")
+
+platyumap_3_1 <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = platymarkers3_1,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+
+platyumap_3_1
+```
+Yeah nothing specific
+
+3_2: Calbindin, Small nuclear ribonucleoprotein Sm D3, Heterogeneous nuclear ribonucleoprotein Q.
+
+3_3: Onecut
+
+#### Cluster 4
+
+```{r}
+View(all_markers_sub[[4]])
+```
+
+```{r}
+View(lookup_subsets_sub[[4]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus4_markers <- as.character(rownames(all_markers_sub[[4]]))
+
+subclus4_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus4_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10",
+    combine = F
+  )
+
+subclus4_marker_plots
+```
+
+Collar receptor cells https://elifesciences.org/articles/36262
+
+#### Cluster 5
+
+```{r}
+View(all_markers_sub[[5]])
+```
+
+```{r}
+View(lookup_subsets_sub[[5]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus5_markers <- as.character(rownames(all_markers_sub[[5]]))
+
+subclus5_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus5_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+#### Cluster 6
+
+```{r}
+View(all_markers_sub[[6]])
+```
+
+```{r}
+View(lookup_subsets_sub[[6]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus6_markers <- as.character(rownames(all_markers_sub[[6]]))
+
+subclus6_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus6_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+##### Cluster 6 subcluster
+
+Needs to be sub_clustered
+
+```{r}
+subcluster_neuronal <- FindSubCluster(
+  object      = subcluster_neuronal,
+  cluster     = "6",
+  graph.name  = "integrated_snn", 
+  subcluster.name = "subcluster_6", 
+  resolution  = 0.2,
+  algorithm = 4 
+)
+```
+
+```{r}
+umap_subcluster6 <- DimPlot(
+  subcluster_neuronal,
+  reduction = "umap",
+  group.by = "subcluster_6",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 2.5
+) + NoLegend()
+```
+
+```{r}
+markers_6_list <- list()
+
+markers_6_list[[1]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "6_1",
+  group.by = "subcluster_6",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_6_list[[2]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "6_2",
+  group.by = "subcluster_6",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_6_list[[3]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "6_3",
+  group.by = "subcluster_6",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_6_list[[4]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "6_4",
+  group.by = "subcluster_6",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_6_list[[5]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "6_5",
+  group.by = "subcluster_6",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+6_1: nk2.2 pop
+66_2: FVRIaminde
+6_3: FLamide neuropeptide precursor. putative Tyrosine decarboxylase, dopamine beta-hydroxylase!!!!!
+
+4 ia bit tricky so I am comparing the difference between this a 3 as they seem to share some things
+
+```{r}
+markers_6_list[[6]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "6_4",
+  ident.2 = "6_3",
+  group.by = "subcluster_6",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+First thing that comes up is that FLamide neuropeptide precursor is more in 4
+
+6_5
+
+#### Cluster 7
+
+```{r}
+View(all_markers_sub[[7]])
+```
+
+```{r}
+View(lookup_subsets_sub[[7]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus7_markers <- as.character(rownames(all_markers_sub[[7]]))
+
+subclus7_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus7_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+##### Cluster 7 subcluster
+
+Needs to be sub_clustered
+
+```{r}
+subcluster_neuronal <- FindSubCluster(
+  object      = subcluster_neuronal,
+  cluster     = "7",
+  graph.name  = "integrated_snn", 
+  subcluster.name = "subcluster_7", 
+  resolution  = 0.2,
+  algorithm = 4 
+)
+```
+
+```{r}
+umap_subcluster7 <- DimPlot(
+  subcluster_neuronal,
+  reduction = "umap",
+  group.by = "subcluster_7",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 2.5
+) + NoLegend()
+```
+
+```{r}
+markers_7_list <- list()
+
+markers_7_list[[1]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "7_1",
+  group.by = "subcluster_7",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_7_list[[2]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "7_2",
+  group.by = "subcluster_7",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_7_list[[3]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "7_3",
+  group.by = "subcluster_7",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_7_list[[4]] <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "7_4",
+  group.by = "subcluster_7",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+7_1: 
+
+#### Cluster 8
+
+```{r}
+View(all_markers_sub[[8]])
+```
+
+```{r}
+View(lookup_subsets_sub[[8]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus8_markers <- as.character(rownames(all_markers_sub[[8]]))
+
+subclus8_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus8_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+We are checking
+
+```{r}
+markers_8 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "8",
+  group.by = "integrated_snn_res.0.45",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+
+#### Cluster 9
+
+```{r}
+View(all_markers_sub[[9]])
+```
+
+```{r}
+View(lookup_subsets_sub[[9]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus9_markers <- as.character(rownames(all_markers_sub[[9]]))
+
+subclus9_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus9_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+We are checking
+
+```{r}
+markers_9 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "9",
+  group.by = "integrated_snn_res.0.45",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+#### Cluster 10
+
+```{r}
+View(all_markers_sub[[10]])
+```
+
+```{r}
+View(lookup_subsets_sub[[10]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus10_markers <- as.character(rownames(all_markers_sub[[10]]))
+
+subclus10_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus10_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Can't see anything at the moment
+
+```{r}
+markers_10 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "10",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25)
+```
+
+Doesn't really give a clearer view. Has this "notch 2 protein"
+
+#### Cluster 11
+
+```{r}
+View(all_markers_sub[[11]])
+```
+
+```{r}
+View(lookup_subsets_sub[[11]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus11_markers <- as.character(rownames(all_markers_sub[[11]]))
+
+subclus11_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus11_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Hmm, let's look at this one specifically.
+
+
+```{r}
+markers_11 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "11",
+  group.by = "integrated_snn_res.0.45",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+
+Certainly neuronal still but no clear identifiers
+
+Let's test 10 versus 11 to find the exact difference between them.
+
+```{r}
+markers10vs11 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "10",
+  ident.2 = "11",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25
+)
+```
+
+MMP-9 
+Tetraspanin-17
+SPO-spondin
+
+#### Cluster 12
+
+```{r}
+View(all_markers_sub[[12]])
+```
+
+```{r}
+View(lookup_subsets_sub[[12]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus12_markers <- as.character(rownames(all_markers_sub[[12]]))
+
+subclus12_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus12_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Again MF
+
+```{r}
+markers_12 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "12",
+  group.by = "subcluster_10",
+  recorrect_umi = F,
+  min.pct = 0.25
+)
+```
+
+#### Cluster 13
+
+```{r}
+View(all_markers_sub[[13]])
+```
+
+```{r}
+View(lookup_subsets_sub[[13]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus13_markers <- as.character(rownames(all_markers_sub[[13]]))
+
+subclus13_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus13_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Unlikely to be neuronal. Remove.
+
+#### Cluster 14
+
+```{r}
+View(all_markers_sub[[14]])
+```
+
+```{r}
+View(lookup_subsets_sub[[14]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus14_markers <- as.character(rownames(all_markers_sub[[14]]))
+
+subclus14_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus14_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Let's double confirm
+
+```{r}
+markers_14 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "14",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25)
+```
+
+#### Cluster 15
+
+```{r}
+View(all_markers_sub[[15]])
+```
+
+```{r}
+View(lookup_subsets_sub[[15]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus15_markers <- as.character(rownames(all_markers_sub[[15]]))
+
+subclus15_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus15_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus15_marker_plots
+```
+
+
+#### Cluster 16
+
+```{r}
+View(all_markers_sub[[16]])
+```
+
+```{r}
+View(lookup_subsets_sub[[16]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus16_markers <- as.character(rownames(all_markers_sub[[16]]))
+
+subclus16_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus16_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus16_marker_plots
+```
+
+
+Let's tak another look.
+
+```{r}
+markers_16 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "16",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25)
+```
+
+#### Cluster 17
+
+```{r}
+View(all_markers_sub[[17]])
+```
+
+```{r}
+View(lookup_subsets_sub[[17]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus17_markers <- as.character(rownames(all_markers_sub[[17]]))
+
+subclus17_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus16_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+#### Cluster 18
+
+```{r}
+View(all_markers_sub[[18]])
+```
+
+```{r}
+View(lookup_subsets_sub[[18]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus18_markers <- as.character(rownames(all_markers_sub[[18]]))
+
+subclus18_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus18_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus18_marker_plots
+```
+
+
+#### Cluster 19
+
+```{r}
+View(all_markers_sub[[19]])
+```
+
+```{r}
+View(lookup_subsets_sub[[19]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus19_markers <- as.character(rownames(all_markers_sub[[19]]))
+
+subclus19_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus19_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus19_marker_plots
+```
+
+
+#### Cluster 20
+
+```{r}
+View(all_markers_sub[[20]])
+```
+
+```{r}
+View(lookup_subsets_sub[[20]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus20_markers <- as.character(rownames(all_markers_sub[[20]]))
+
+subclus20_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus20_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus20_marker_plots
+```
+
+
+#### Cluster 21
+
+```{r}
+View(all_markers_sub[[21]])
+```
+
+```{r}
+View(lookup_subsets_sub[[21]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus21_markers <- as.character(rownames(all_markers_sub[[21]]))
+
+subclus21_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus21_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus21_marker_plots
+```
+
+
+#### Cluster 22
+
+```{r}
+View(all_markers_sub[[22]])
+```
+
+```{r}
+View(lookup_subsets_sub[[22]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus22_markers <- as.character(rownames(all_markers_sub[[22]]))
+
+subclus22_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus22_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus22_marker_plots
+```
+
+
+
+#### Cell type labels
+
+```{r}
+subcluster_cell_type <- c(
+  "1" = "Hetrogeneous_Neuronal_population",
+  "2" = "Non-neuronal_ECM_organising_population",
+  "3_1" = "Pax6+/nk6+_progenitors",
+  "3_2" = "Spliceosome_active_progenitors",
+  "3_3" = "onecut+_progenitors",
+  "3_4" = "Pax6+/nk6+_progenitors",
+  "4" = "Collar_receptor_cells",
+  "5" = "Vasotocin–neurophysin+/SHM+-neuropeptidergic_neurones",
+  "6_1" = "Nk2.2+_progenitors",
+  "6_2" = "FVRIamide_neuropeptidergic_neurones",
+  "6_3" = "Noradrenergic_neurons",
+  "6_4" = "Noradrenergic_neurons",
+  "6_5" = "FVamide_neuropeptidergic_neurones",
+  "7_1" = "MIP/allatostatin_B_neuropeptidergic_neurones", 
+  "7_2" = "unidentified/pedal+_neuropeptidergic_neurones",
+  "7_3" = "Potential_novel_marker/neuropeptide(VIE-hap1G00000016608)",
+  "7_4" = "Potential_novel_marker/neuropeptide(VIE-hap1G00000016600)",
+  "8" = "NOMPC_sensory_neurones",
+  "9" = "Unidentified/VIE-hap1G00000000106_population",
+  "10" = "Unidentified_MMP9_population",
+  "11" = "Non-neuronal_1",
+  "12" = "DLamide_neuropeptidergic_neurones",
+  "13" = "hh+_population(remove)",
+  "14" = "SLYamide/FDSIG_neuropeptidergic_neurones",
+  "15" = "Putative:peptidergic_responsive_interneurones",
+  "16" = "Unidentified/Non-neuronal",
+  "17" = "Contactin+_population",
+  "18" = "LYamide/FDSIG_neuropeptidergic_neurones",
+  "19" = "Unidentfied/ALT:SPYpeptide_neuropeptidergic_neurones",
+  "20" = "Putative:Acid-sensing_ion_channel+_neurones",
+  "21" = "WLD_neuropeptidergic_neurones", 
+  "22" = "FMRFamide-sensitive_population"
+)
+
+subcluster_neuronal$combined_cluster <- with(subcluster_neuronal@meta.data, 
+  ifelse(integrated_snn_res.0.45 == 3, paste0(subcluster_3),
+  ifelse(integrated_snn_res.0.45 == 6, paste0(subcluster_6),
+  ifelse(integrated_snn_res.0.45 == 7, paste0(subcluster_7),
+         as.character(integrated_snn_res.0.45)
+  ))))
+
+subcluster_neuronal$first_cell_types <- plyr::mapvalues(
+  x    = subcluster_neuronal$combined_cluster,
+  from = names(subcluster_cell_type),
+  to   = subcluster_cell_type
+)
+
+Idents(subcluster_neuronal) <- subcluster_neuronal$first_cell_types
+```
+
+Wow! I've gone though all of this and gotten a pretty good representation of a lot of neuronal structures. However, I cannot see as main neuronal classes related to glut etc. These are likely in the large neuronal structure. I am going to specifically subset by the neurones here.
+
+
+```{r}
+umap_subcluster_cell_types <- 
+```
+
+
+## Alternative subcluster
+
+Here I take out those populations which are maybe incorrectly assigned as related to neurones but are likely just early blastemal cells. I'm also thinking about including some epidermal clusters but maybe that's a different way of looking at the data
+
+```{r}
+neuronal_celltypes_alt <- c("Neuronal", "Neuropeptigeric_neurones", 
+                        "Collar_receptor_cells", "Neuronal_2", "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells")
+
+subcluster_neuronal_alt <- subset(
+  merged_local_int,
+  idents = neuronal_celltypes_alt
+)
+
+DefaultAssay(subcluster_neuronal_alt) <- "integrated"
+```
+
+```{r}
+#run PCA
+subcluster_neuronal_alt <- RunPCA(subcluster_neuronal_alt, npcs = 100, verbose = FALSE)
+
+# Plot the elbow plot
+ElbowPlot(object = subcluster_neuronal_alt, 
+          ndims = 100)
+```
+
+```{r}
+# Determine percent of variation associated with each PC
+pct <- subcluster_neuronal_alt[["pca"]]@stdev / sum(subcluster_neuronal_alt[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5
+co1 <- which(cumu > 75 & pct < 5)[1]
+
+co1
+
+# Determine the difference between variation of PC and subsequent PC
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation
+pcs <- min(co1, co2)
+
+pcs
+```
+
+
+```{r}
+#Run the UMAP
+subcluster_neuronal_alt <- RunUMAP(subcluster_neuronal_alt, dims = 1:60, verbose = FALSE)
+```
+
+```{r}
+#Clustering
+
+# Determine the K-nearest neighbor graph
+subcluster_neuronal_alt <- FindNeighbors(object = subcluster_neuronal_alt, 
+                                dims = 1:60,
+                                k.param = 30,
+                                n.trees = 400)
+
+
+kNN_sub <- pheatmap(subcluster_neuronal_alt_alt@graphs$integrated_nn[1:200, 1:200],
+         col = c("white", "black"), border_color = "grey90", main = "KNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("kNN graph of merged_seurat_rpca")
+
+sNN_sub <- pheatmap(subcluster_neuronal_alt_alt@graphs$integrated_snn[1:200, 1:200],
+         col = colorRampPalette(c("white", 'red', "black"))(100),
+         border_color = "grey90", main = "SNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("sNN graph of merged_seurat_rpca")
+
+kNN_sub
+sNN_sub
+```
+
+```{r}
+# Determine the clusters for various resolutions                                
+subcluster_neuronal_alt <- FindClusters(object = subcluster_neuronal_alt,
+                               resolution = seq(0.2, 0.8, by = 0.05),
+                               algorithm = 4)
+```
+
+```{r}
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_neuronal_alt@meta.data), value = TRUE)
+
+# Loop over resolutions and generate DimPlots
+umap_plots_subclus_alt <- lapply(resolution_cols, function(col_name) {
+  resolution_label <- sub("integrated_snn_res\\.", "", col_name)
+  
+  p <- DimPlot(
+    subcluster_neuronal_alt,
+    reduction = "umap",
+    group.by = col_name,
+    label = TRUE,
+    label.size = 4,
+    raster = F,
+    stroke.size = 0.5
+  ) +
+    ggtitle(paste("Resolution - integrated", resolution_label)) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  
+  return(p)
+})
+```
+
+Let's see
+
+```{r}
+umap_plots_subclus_alt
+```
+
+I actually think this is a lot better and more intuitive map than the other. I think the couple other clusters I included, while may be related are enitely different trajectories. I'll let it above as it makes sense to do so but let's go through this one. they're going be to be same, but let's match the cluster numbers now.
+
+hmm, 0.25 seems the best
+
+```{r}
+pdf(file = "~/desktop/subclus_clusters_0.25.pdf",
+    width = 16,
+    height = 8)
+print(umap_plots_subclus_alt[[7]])
+dev.off()
+```
+
+
+Let's also look at the timepoints
+
+```{r}
+subcluster_umap_time <- DimPlot(
+  subcluster_neuronal_alt,
+  reduction = "umap",
+  group.by = "timepoint",
+  shuffle = T
+)
+```
+
+```{r}
+pdf(file = "~/desktop/subclus_alt_time_split.pdf",
+    width = 14,
+    height = 8)
+print(subcluster_umap_time)
+dev.off()
+```
+
+
+```{r}
+Idents(subcluster_neuronal_alt) <- "integrated_snn_res.0.25"
+DefaultAssay(subcluster_neuronal_alt) <- "SCT"
+```
+
+```{r}
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells_sub <- FetchData(subcluster_neuronal_alt, 
+                     vars = c("integrated_snn_res.0.25", "timepoint")) %>%
+        dplyr::count(integrated_snn_res.0.25, timepoint)
+```
+
+```{r}
+# Barplot of number of cells per cluster by sample
+cells_per_sample <- ggplot(n_cells_sub, aes(x=integrated_snn_res.0.25, y=n, fill=timepoint)) +
+    geom_bar(position=position_dodge(), stat="identity") +
+  theme_minimal()
+    #geom_text(aes(label=n), vjust = -.2, position=position_dodge(1))
+
+cells_per_sample
+```
+
+```{r}
+# Barplot of proportion of cells in each cluster by sample
+prop_cell_per_cluster_alt <- ggplot(subcluster_neuronal_alt@meta.data) +
+    geom_bar(aes(x=integrated_snn_res.0.25, fill=timepoint), position=position_fill()) +
+  ggtitle("Proportion of cells per cluster by timepoint - resolution 0.25")
+
+prop_cell_per_cluster_alt
+```
+```{r}
+# Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nCount_SCT", "nFeature_SCT", "log10GenesPerUMI")
+
+metrics_plot <- FeaturePlot(subcluster_neuronal_alt,
+            reduction = "umap", 
+            features = metrics,
+            stroke.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10')
+```
+
+```{r}
+metrics_plot
+```
+
+We can then proceed to finding the markers
+
+```{r}
+#Make double sure variable features are still here (features variable from all samples)
+subcluster_neuronal_alt <- FindVariableFeatures(subcluster_neuronal_alt)
+
+#Clear old SCT models oof
+#subcluster_neuronal[["SCT"]]@ <- list()
+
+#Prep the SCT object for DE 
+#subcluster_neuronal_alt <- PrepSCTFindMarkers(subcluster_neuronal_alt, assay = "SCT", verbose = TRUE)
+```
+
+And then run the function:
+
+```{r}
+library(metap)
+clusters_sub <- levels(Idents(subcluster_neuronal_alt))  # e.g., "0", "1", "2", etc.
+
+all_markers_sub <- lapply(clusters_sub, function(clust) {
+  FindConservedMarkers(
+    subcluster_neuronal_alt,
+    ident.1 = clust,
+    grouping.var = "timepoint",
+    assay = "SCT",
+    only.pos = TRUE,
+    min.diff.pct = 0.25,
+    min.pct = 0.25,
+    logfc.threshold = 0.25,
+    recorrect_umi = FALSE
+  )
+})
+
+names(all_markers_sub) <- clusters_sub  # name each list element by cluster
+
+#saveRDS(all_markers_sub, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/all_markers_sub_neurone.RDS")
+```
+
+Great! We now have those markerssssss
+
+### Neuronal cell type annotation
+
+Generate the subset lookup
+
+```{r}
+lookup_subsets_sub_3 <- lapply(all_markers_sub, function(cluster_df) {
+  #Move genes to columnms
+  cluster_df$gene <- rownames(cluster_df)
+  
+  # Extract genes from this cluster
+  cluster_genes <- cluster_df$gene
+  
+  # Subset lookup table to these genes
+  subset_df <- look_up_table[look_up_table$gene %in% cluster_genes, ]
+  
+  return(subset_df)
+})
+```
+
+```{r}
+lookup_subsets_2 <- look_up_table[look_up_table$gene %in% rownames(markers_2), ]
+```
+
+#### Top level cell types
+
+```{r}
+#main onject cell types
+top_level_cells <- DimPlot(
+  subcluster_neuronal_alt,
+  reduction = "umap",
+  group.by = "cell_types_near_final",
+  label = T,
+  label.size = 3,
+  repel = T
+) + 
+  ggtitle("Main object annotations")
+```
+
+```{r}
+pdf("~/desktop/subcluster_top_level_annnoation.pdf",
+    height = 10,
+    width = 16)
+print(top_level_cells)
+dev.off()
+```
+
+This is the hetrogeneous population of neurones only really shown to express the 
+
+#### Cluster 1
+
+```{r}
+View(all_markers_sub[[1]])
+```
+
+```{r}
+View(lookup_subsets_sub[[1]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus1_markers <- as.character(rownames(all_markers_sub[[1]]))
+
+subclus1_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus1_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus1_marker_plots
+```
+
+Heterogeneous neuronal population
+
+#### Cluster 2
+
+```{r}
+View(all_markers_sub[[2]])
+```
+
+```{r}
+View(lookup_subsets_sub[[2]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus2_markers <- as.character(rownames(all_markers_sub[[2]]))
+
+subclus2_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus2_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus2_marker_plots
+```
+
+##### Cluster 2 subcluster
+
+```{r}
+subcluster_neuronal_alt <- FindSubCluster(
+  object      = subcluster_neuronal_alt,
+  cluster     = "2",
+  graph.name  = "integrated_snn", 
+  subcluster.name = "subcluster_2", 
+  resolution  = 1.5,
+  algorithm = 4 
+)
+```
+
+```{r}
+umap_subcluster2 <- DimPlot(
+  subcluster_neuronal_alt,
+  reduction = "umap",
+  group.by = "subcluster_2",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 5
+) + NoLegend()
+```
+
+```{r}
+#Correct subclustering
+subcluster2_correction <- c(
+  "2_1" = "2_1",
+  "2_2" = "2_1",
+  "2_3" = "2_3",
+  "2_4" = "2_2",
+  "2_5" = "2_1",
+  "2_6" = "2_1",
+  "2_7" = "2_2",
+  "2_8" = "2_1",
+  "2_9" = "2_1",
+  "2_10" = "2_2",
+  "2_11" = "2_1",
+  "2_12" = "2_4",
+  "2_13" = "2_3",
+  "2_14" = "2_5"
+)
+
+subcluster_neuronal_alt$subcluster_2_corrected <- 
+  ifelse(
+    subcluster_neuronal_alt$subcluster_2 %in% names(subcluster2_correction),
+    subcluster2_correction[subcluster_neuronal_alt$subcluster_2],
+    subcluster_neuronal_alt$subcluster_2
+  )
+```
+
+```{r}
+umap_subcluster2 <- DimPlot(
+  subcluster_neuronal_alt,
+  reduction = "umap",
+  group.by = "subcluster_2_corrected",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 5
+) + NoLegend()
+```
+
+
+Finds five clusters
+
+```{r}
+markers_2_list <- list()
+
+markers_2_list[[1]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "2_1",
+  group.by = "subcluster_2_corrected",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_2_list[[2]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "2_2",
+  group.by = "subcluster_2_corrected",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_2_list[[3]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "2_3",
+  group.by = "subcluster_2_corrected",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_2_list[[4]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "2_4",
+  group.by = "subcluster_2_corrected",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_2_list[[5]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "2_5",
+  group.by = "subcluster_2_corrected",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+Looking more closely at 2_4
+
+```{r}
+markers_2_4_vs_2_3 <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "2_4",
+  ident.2 = "2_3",
+  group.by = "subcluster_2_corrected",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+
+#### Cluster 3
+
+```{r}
+View(all_markers_sub[[3]])
+```
+
+```{r}
+View(lookup_subsets_sub[[3]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus3_markers <- as.character(rownames(all_markers_sub[[3]]))
+
+subclus3_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus3_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+##### Cluster 3 subcluster
+
+```{r}
+subcluster_neuronal_alt <- FindSubCluster(
+  object      = subcluster_neuronal_alt,
+  cluster     = "3",
+  graph.name  = "integrated_snn", 
+  subcluster.name = "subcluster_3", 
+  resolution  = 0.4,
+  algorithm = 4 
+)
+```
+
+```{r}
+umap_subcluster3 <- DimPlot(
+  subcluster_neuronal_alt,
+  reduction = "umap",
+  group.by = "subcluster_3",
+  raster = F,
+  stroke.size = 0.5,
+  label = T,
+  label.size = 2.5
+) + NoLegend()
+```
+
+Finds four clusters
+
+```{r}
+markers_3_list <- list()
+
+markers_3_list[[1]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_1",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[2]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_2",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[3]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_3",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[4]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_4",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[5]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_5",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[6]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_6",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[7]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_7",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[8]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_8",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+markers_3_list[[9]] <- FindMarkers(
+  subcluster_neuronal_alt,
+  ident.1 = "3_9",
+  group.by = "subcluster_3",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+3_1: 
+
+
+```{r}
+#platygenesfrom findmarkers
+platymarkers3_1 <- rownames(markers_3_list[[1]])
+
+platyumap_3_1 <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = platymarkers3_1,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+```
+
+```{r}
+platyumap_3_1
+```
+
+3_2: nk2.2
+3_3: FVRIamide_neuropeptidergic_neurones
+3_4: hap1G00000013443 - noradrenaline transporter, strong marker is also VIE-hap1G00000001553, potentially IQ motif and ankyrin repeat domain-containing protein 1, also TrpV6
+3_5:
+
+```{r}
+#platygenesfrom findmarkers
+platymarkers3_5 <- rownames(markers_3_list[[5]])
+
+platyumap_3_5 <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = platymarkers3_5,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+```
+
+```{r}
+platyumap_3_5
+```
+
+Expresses TDC & dopamine beta-hydroxylase so noradrengeric
+
+```{r}
+#platygenesfrom findmarkers
+platymarkers3_6 <- rownames(markers_3_list[[6]])
+
+platyumap_3_6 <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = platymarkers3_6,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+```
+
+```{r}
+platyumap_3_6
+```
+
+3_6 Unidentified
+
+```{r}
+#platygenesfrom findmarkers
+platymarkers3_7 <- rownames(markers_3_list[[7]])
+
+platyumap_3_7 <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = platymarkers3_7,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+```
+
+```{r}
+platyumap_3_7
+```
+
+```{r}
+#platygenesfrom findmarkers
+platymarkers3_8 <- rownames(markers_3_list[[8]])
+
+platyumap_3_8 <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = platymarkers3_8,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+```
+
+```{r}
+platyumap_3_8
+```
+
+```{r}
+#platygenesfrom findmarkers
+platymarkers3_9 <- rownames(markers_3_list[[9]])
+
+platyumap_3_9 <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = platymarkers3_9,
+    raster = F,
+    stroke.size = 0.8,
+    order = T,
+    combine = F
+  )
+```
+
+```{r}
+platyumap_3_9
+```
+
+#### Cluster 4
+
+```{r}
+View(all_markers_sub[[4]])
+```
+
+```{r}
+View(lookup_subsets_sub[[4]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus4_markers <- as.character(rownames(all_markers_sub[[4]]))
+
+subclus4_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus4_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10",
+    combine = F
+  )
+
+subclus4_marker_plots
+```
+
+Collar receptor cells https://elifesciences.org/articles/36262
+
+#### Cluster 5
+
+```{r}
+View(all_markers_sub[[5]])
+```
+
+```{r}
+View(lookup_subsets_sub[[5]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus5_markers <- as.character(rownames(all_markers_sub[[5]]))
+
+subclus5_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus5_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+#### Cluster 6
+
+```{r}
+View(all_markers_sub[[6]])
+```
+
+```{r}
+View(lookup_subsets_sub[[6]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus6_markers <- as.character(rownames(all_markers_sub[[6]]))
+
+subclus6_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus6_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+
+#### Cluster 7
+
+```{r}
+View(all_markers_sub[[7]])
+```
+
+```{r}
+View(lookup_subsets_sub[[7]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus7_markers <- as.character(rownames(all_markers_sub[[7]]))
+
+subclus7_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus7_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+
+#### Cluster 8
+
+```{r}
+View(all_markers_sub[[8]])
+```
+
+```{r}
+View(lookup_subsets_sub[[8]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus8_markers <- as.character(rownames(all_markers_sub[[8]]))
+
+subclus8_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus8_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+We are checking
+
+```{r}
+markers_8 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "8",
+  group.by = "integrated_snn_res.0.45",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+
+#### Cluster 9
+
+```{r}
+View(all_markers_sub[[9]])
+```
+
+```{r}
+View(lookup_subsets_sub[[9]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus9_markers <- as.character(rownames(all_markers_sub[[9]]))
+
+subclus9_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus9_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+We are checking
+
+```{r}
+markers_9 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "9",
+  group.by = "integrated_snn_res.0.45",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+#### Cluster 10
+
+```{r}
+View(all_markers_sub[[10]])
+```
+
+```{r}
+View(lookup_subsets_sub[[10]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus10_markers <- as.character(rownames(all_markers_sub[[10]]))
+
+subclus10_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus10_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+Can't see anything at the moment
+
+```{r}
+markers_10 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "10",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25)
+```
+
+Doesn't really give a clearer view. Has this "notch 2 protein"
+
+#### Cluster 11
+
+```{r}
+View(all_markers_sub[[11]])
+```
+
+```{r}
+View(lookup_subsets_sub[[11]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus11_markers <- as.character(rownames(all_markers_sub[[11]]))
+
+subclus11_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus11_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+Hmm, let's look at this one specifically.
+
+
+```{r}
+markers_11 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "11",
+  group.by = "integrated_snn_res.0.45",
+  recorrect_umi = F,
+  min.pct = 0.25,
+  min.diff.pct = 0.25,
+  logfc.threshold = 1
+)
+```
+
+
+Certainly neuronal still but no clear identifiers
+
+Let's test 10 versus 11 to find the exact difference between them.
+
+```{r}
+markers10vs11 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "10",
+  ident.2 = "11",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25
+)
+```
+
+MMP-9 
+Tetraspanin-17
+SPO-spondin
+
+#### Cluster 12
+
+```{r}
+View(all_markers_sub[[12]])
+```
+
+```{r}
+View(lookup_subsets_sub[[12]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus12_markers <- as.character(rownames(all_markers_sub[[12]]))
+
+subclus12_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus12_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Again MF
+
+```{r}
+markers_12 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "12",
+  group.by = "subcluster_10",
+  recorrect_umi = F,
+  min.pct = 0.25
+)
+```
+
+#### Cluster 13
+
+```{r}
+View(all_markers_sub[[13]])
+```
+
+```{r}
+View(lookup_subsets_sub[[13]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus13_markers <- as.character(rownames(all_markers_sub[[13]]))
+
+subclus13_marker_plots <- subcluster_neuronal |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus13_markers,
+    raster = F,
+    order = T,
+    min.cutoff = "q10"
+  )
+```
+
+Unlikely to be neuronal. Remove.
+
+#### Cluster 14
+
+```{r}
+View(all_markers_sub[[14]])
+```
+
+```{r}
+View(lookup_subsets_sub[[14]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus14_markers <- as.character(rownames(all_markers_sub[[14]]))
+
+subclus14_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus14_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+Let's double confirm
+
+```{r}
+markers_14 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "14",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25)
+```
+
+#### Cluster 15
+
+```{r}
+View(all_markers_sub[[15]])
+```
+
+```{r}
+View(lookup_subsets_sub[[15]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus15_markers <- as.character(rownames(all_markers_sub[[15]]))
+
+subclus15_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus15_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus15_marker_plots
+```
+
+
+#### Cluster 16
+
+```{r}
+View(all_markers_sub[[16]])
+```
+
+```{r}
+View(lookup_subsets_sub[[16]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus16_markers <- as.character(rownames(all_markers_sub[[16]]))
+
+subclus16_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus16_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+```{r}
+subclus16_marker_plots
+```
+
+
+Let's tak another look.
+
+```{r}
+markers_16 <- FindMarkers(
+  subcluster_neuronal,
+  ident.1 = "16",
+  group.by = "integrated_snn_res.0.4",
+  recorrect_umi = F,
+  min.pct = 0.25)
+```
+
+#### Cluster 17
+
+```{r}
+View(all_markers_sub[[17]])
+```
+
+```{r}
+View(lookup_subsets_sub[[17]])
+```
+
+```{r}
+#Good markers for this cluster
+subclus17_markers <- as.character(rownames(all_markers_sub[[17]]))
+
+subclus17_marker_plots <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = subclus17_markers,
+    raster = F,
+    order = T,
+    combine = F,
+    min.cutoff = "q10"
+  )
+```
+
+#### Cell type labels
+
+```{r}
+subcluster_cell_type <- c(
+  "1" = "Heterogeneous_Neuronal_population",
+  "2_1" = "Differentiating_progenitor_population",
+  "2_2" = "Proliferating_neural_stem_cells",
+  "2_3" = "onecut+_progenitors",
+  "2_4" = "Putative:Fer3+_progenitors",
+  "2_5" = "Unidentified_monoamine_population",
+  "3_1" = "MIP/Allatostatin_B_neuropeptidergic_neurones",
+  "3_2" = "Nk2.2+_progenitors",
+  "3_3" = "FVRIamide_neuropeptidergic_neurones",
+  "3_4" = "Unidenified_neurones/Alt:TrpV6+_neurones",
+  "3_5" = "Noradrengergic_neurones",
+  "3_6" = "Unidentified_ataxin-1+_neurones",
+  "3_7" = "Unidentified_TDC+_neurones",
+  "3_8" = "Unidentifed_1",
+  "3_9" = "myomodulin_neuropeptidergic_neurones",
+  "4" = "Collar_receptor_cells",
+  "5" = "Vasotocin–neurophysin+/SHM+-neuropeptidergic_neurones",
+  "6" = "Calmodulin+_population",
+  "7" = "Unidentified/VIE-hap1G00000000106_population",
+  "8" = "Unidentified_MMP9_population",
+  "9" = "DLamide_neuropeptidergic_neurones",
+  "10" = "CCWamide_neuropeptidergic_population",
+  "11" = "Putative:peptidergic_responsive_interneurones",
+  "12" = "Unidentified_2",
+  "13" = "Contactin+_population",
+  "14" = "LYamide/FDSIG_neuropeptidergic_neurones",
+  "15" = "NGEW_neuropeptidergic_neurones",
+  "16" = "WLDpeptide_neuropeptidergic_neurones",
+  "17" = "Unidentified_3"
+)
+
+subcluster_neuronal_alt$combined_cluster <- with(subcluster_neuronal_alt@meta.data, 
+  ifelse(integrated_snn_res.0.25 == 2, paste0(subcluster_2_corrected),
+  ifelse(integrated_snn_res.0.25 == 3, paste0(subcluster_3),
+         as.character(integrated_snn_res.0.25)
+  )))
+
+subcluster_neuronal_alt$first_cell_types <- plyr::mapvalues(
+  x    = subcluster_neuronal_alt$combined_cluster,
+  from = names(subcluster_cell_type),
+  to   = subcluster_cell_type
+)
+
+Idents(subcluster_neuronal_alt) <- subcluster_neuronal_alt$first_cell_types
+```
+
+
+
+## Alternative Alternative subcluster w/ some epidermal clusters
+
+### Whole epidermis
+
+I'm going to try this first with just the whole epidermis structure
+
+```{r}
+alt_alt_neuronal_celltypes <- c("Neuronal", "Neuropeptigeric_neurones", 
+                        "Collar_receptor_cells", "Neuronal_2", "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells",
+                        "Epidermis")
+
+subcluster_neuronal_alt_alt <- subset(
+  merged_local_int,
+  idents = alt_alt_neuronal_celltypes
+)
+
+DefaultAssay(subcluster_neuronal_alt_alt) <- "integrated"
+```
+
+```{r}
+#run PCA
+subcluster_neuronal_alt_alt <- RunPCA(subcluster_neuronal_alt_alt, npcs = 100, verbose = FALSE)
+
+# Plot the elbow plot
+ElbowPlot(object = subcluster_neuronal_alt_alt, 
+          ndims = 100)
+```
+
+```{r}
+# Determine percent of variation associated with each PC
+pct <- subcluster_neuronal_alt_alt[["pca"]]@stdev / sum(subcluster_neuronal_alt_alt[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5
+co1 <- which(cumu > 75 & pct < 5)[1]
+
+co1
+
+# Determine the difference between variation of PC and subsequent PC
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation
+pcs <- min(co1, co2)
+
+pcs
+```
+
+
+```{r}
+#Run the UMAP
+subcluster_neuronal_alt_alt <- RunUMAP(subcluster_neuronal_alt_alt, dims = 1:60, verbose = FALSE)
+```
+
+```{r}
+#Clustering
+
+# Determine the K-nearest neighbor graph
+subcluster_neuronal_alt_alt <- FindNeighbors(object = subcluster_neuronal_alt_alt, 
+                                dims = 1:60,
+                                k.param = 30,
+                                n.trees = 400)
+
+
+kNN_sub <- pheatmap(subcluster_neuronal_alt_alt@graphs$integrated_nn[1:200, 1:200],
+         col = c("white", "black"), border_color = "grey90", main = "KNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("kNN graph of merged_seurat_rpca")
+
+sNN_sub <- pheatmap(subcluster_neuronal_alt_alt@graphs$integrated_snn[1:200, 1:200],
+         col = colorRampPalette(c("white", 'red', "black"))(100),
+         border_color = "grey90", main = "SNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("sNN graph of merged_seurat_rpca")
+
+kNN_sub
+sNN_sub
+```
+
+```{r}
+# Determine the clusters for various resolutions                                
+subcluster_neuronal_alt_alt <- FindClusters(object = subcluster_neuronal_alt_alt,
+                               resolution = seq(0.4, 0.8, by = 0.1),
+                               algorithm = 4)
+```
+
+```{r}
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_neuronal_alt_alt@meta.data), value = TRUE)
+
+# Loop over resolutions and generate DimPlots
+umap_plots_subclus_alt_alt <- lapply(resolution_cols, function(col_name) {
+  resolution_label <- sub("integrated_snn_res\\.", "", col_name)
+  
+  p <- DimPlot(
+    subcluster_neuronal_alt_alt,
+    reduction = "umap",
+    group.by = col_name,
+    label = TRUE,
+    label.size = 4,
+    raster = F,
+    stroke.size = 0.5
+  ) +
+    ggtitle(paste("Resolution - integrated", resolution_label)) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  
+  return(p)
+})
+```
+
+Let's see
+
+```{r}
+umap_plots_subclus_alt_alt
+```
+When I do this, all that be gleaned is that it is of course of epidermal origin but there's nothing to really pull out of the epidermal cluster.
+
+### Proliferative epidermis
+
+Seeing that the above structure didn't really work, I'm going to try this again but with the subcluster of epi that had the highest cytotrace score.
+
+```{r}
+epi_neuronal_celltypes <- c("Neuronal", "Neuropeptigeric_neurones", 
+                        "Collar_receptor_cells", "Neuronal_2", "Vasotocin–neurophysin-producing_sensory–neurosecretory_cells",
+                        "Epidermis_4")
+
+Idents(merged_local_int) <- "subcluster_epi"
+
+subcluster_neuronal_epi <- subset(
+  merged_local_int,
+  idents = epi_neuronal_celltypes
+)
+
+DefaultAssay(subcluster_neuronal_epi) <- "integrated"
+```
+
+```{r}
+#run PCA
+subcluster_neuronal_epi <- RunPCA(subcluster_neuronal_epi, npcs = 100, verbose = FALSE)
+
+# Plot the elbow plot
+ElbowPlot(object = subcluster_neuronal_epi, 
+          ndims = 100)
+```
+
+```{r}
+# Determine percent of variation associated with each PC
+pct <- subcluster_neuronal_epi[["pca"]]@stdev / sum(subcluster_neuronal_epi[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5
+co1 <- which(cumu > 75 & pct < 5)[1]
+
+co1
+
+# Determine the difference between variation of PC and subsequent PC
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation
+pcs <- min(co1, co2)
+
+pcs
+```
+
+
+```{r}
+#Run the UMAP
+subcluster_neuronal_epi <- RunUMAP(subcluster_neuronal_epi, dims = 1:60, verbose = FALSE)
+```
+
+```{r}
+#Clustering
+
+# Determine the K-nearest neighbor graph
+subcluster_neuronal_epi <- FindNeighbors(object = subcluster_neuronal_epi, 
+                                dims = 1:60,
+                                k.param = 30,
+                                n.trees = 400)
+
+
+kNN_sub <- pheatmap(subcluster_neuronal_epi@graphs$integrated_nn[1:200, 1:200],
+         col = c("white", "black"), border_color = "grey90", main = "KNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("kNN graph of merged_seurat_rpca")
+
+sNN_sub <- pheatmap(subcluster_neuronal_epi@graphs$integrated_snn[1:200, 1:200],
+         col = colorRampPalette(c("white", 'red', "black"))(100),
+         border_color = "grey90", main = "SNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("sNN graph of merged_seurat_rpca")
+
+kNN_sub
+sNN_sub
+```
+
+```{r}
+# Determine the clusters for various resolutions                                
+subcluster_neuronal_epi <- FindClusters(object = subcluster_neuronal_epi,
+                               resolution = seq(0.4, 0.8, by = 0.1),
+                               algorithm = 4)
+```
+
+```{r}
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_neuronal_epi@meta.data), value = TRUE)
+
+# Loop over resolutions and generate DimPlots
+umap_plots_subclus_epi<- lapply(resolution_cols, function(col_name) {
+  resolution_label <- sub("integrated_snn_res\\.", "", col_name)
+  
+  p <- DimPlot(
+    subcluster_neuronal_epi,
+    reduction = "umap",
+    group.by = col_name,
+    label = TRUE,
+    label.size = 4,
+    raster = F,
+    stroke.size = 0.5
+  ) +
+    ggtitle(paste("Resolution - integrated", resolution_label)) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  
+  return(p)
+})
+```
+
+Let's see
+
+```{r}
+umap_plots_subclus_epi
+```
+Hmm I mean thius is kinda interesting, it seems that we've not captured the cells that branch into nk2.2 which is weird and that this does not come directly off the epidermis strucutre. I don't think there is any use in including this/it is superfluous/doesn't add much information.
+
+## Further subcluster of main neuronal population
+
+In the above subclustering there was a heterogeneous neuronal population which I want to see if I can dig into more.
+
+Let's look at what I settled on.
+
+```{r}
+
+base_cols <- brewer.pal(12, "Paired")        # max allowed
+palette <- colorRampPalette(base_cols)(
+  length(unique(subcluster_neuronal_alt$first_cell_types))
+)
+
+umap_subclus_neuronal <- DimPlot(
+  subcluster_neuronal_alt,
+  group.by = "first_cell_types",
+  raster = F,
+  cols = palette,
+  stroke.size = 0.8,
+  reduction = "umap"
+)
+```
+
+I am going to take:
+1. Proliferating_neural_stem_cell
+2. Differentiating_progenitor_population
+3. Heterogeneous_Neuronal_population
+
+```{r}
+sub_sub_neuronal_celltypes <- c("Heterogeneous_Neuronal_population")
+
+subcluster_neuronal_het <- subset(
+  subcluster_neuronal_alt,
+  idents = sub_sub_neuronal_celltypes
+)
+
+DefaultAssay(subcluster_neuronal_het) <- "integrated"
+```
+
+```{r}
+#run PCA
+subcluster_neuronal_het <- RunPCA(subcluster_neuronal_het, npcs = 100, verbose = FALSE)
+
+# Plot the elbow plot
+ElbowPlot(object = subcluster_neuronal_het, 
+          ndims = 100)
+```
+
+```{r}
+# Determine percent of variation associated with each PC
+pct <- subcluster_neuronal_het[["pca"]]@stdev / sum(subcluster_neuronal_het[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5
+co1 <- which(cumu > 75 & pct < 5)[1]
+
+co1
+
+# Determine the difference between variation of PC and subsequent PC
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation
+pcs <- min(co1, co2)
+
+pcs
+```
+
+
+```{r}
+#Run the UMAP
+subcluster_neuronal_het <- RunUMAP(subcluster_neuronal_het, dims = 1:67, verbose = FALSE)
+```
+
+```{r}
+#Clustering
+
+# Determine the K-nearest neighbor graph
+subcluster_neuronal_het <- FindNeighbors(object = subcluster_neuronal_het, 
+                                dims = 1:65,
+                                k.param = 30,
+                                n.trees = 400)
+
+
+kNN_sub <- pheatmap(subcluster_neuronal_het@graphs$integrated_nn[1:200, 1:200],
+         col = c("white", "black"), border_color = "grey90", main = "KNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("kNN graph of merged_seurat_rpca")
+
+sNN_sub <- pheatmap(subcluster_neuronal_het@graphs$integrated_snn[1:200, 1:200],
+         col = colorRampPalette(c("white", 'red', "black"))(100),
+         border_color = "grey90", main = "SNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("sNN graph of merged_seurat_rpca")
+
+kNN_sub
+sNN_sub
+```
+This is the first time I've seen such a connected plot.
+
+```{r}
+# Determine the clusters for various resolutions                                
+subcluster_neuronal_het <- FindClusters(object = subcluster_neuronal_het,
+                               resolution = seq(0.2, 0.8, by = 0.05),
+                               algorithm = 4)
+```
+
+```{r}
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(subcluster_neuronal_het@meta.data), value = TRUE)
+
+# Loop over resolutions and generate DimPlots
+umap_plots_subclus_het <- lapply(resolution_cols, function(col_name) {
+  resolution_label <- sub("integrated_snn_res\\.", "", col_name)
+  
+  p <- DimPlot(
+    subcluster_neuronal_het,
+    reduction = "umap",
+    group.by = col_name,
+    label = TRUE,
+    label.size = 4,
+    raster = F,
+    stroke.size = 0.5
+  ) +
+    ggtitle(paste("Resolution - integrated", resolution_label)) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  
+  return(p)
+})
+```
+
+Let's see
+
+```{r}
+umap_plots_subclus_het
+```
+
+Hmm still pretty connected. What if I just take the "mature neurones"
+
+I'm going to have a look at the potential cluster markers quickly
+
+#### Finding markers for Further subcluster
+
+```{r}
+Idents(subcluster_neuronal_het) <- "integrated_snn_res.0.4"
+DefaultAssay(subcluster_neuronal_het) <- "SCT"
+```
+
+We can then proceed to finding the markers
+
+```{r}
+#Make double sure variable features are still here (features variable from all samples)
+subcluster_neuronal_het<- FindVariableFeatures(subcluster_neuronal_het)
+
+#Clear old SCT models oof
+#subcluster_neuronal[["SCT"]]@ <- list()
+
+#Prep the SCT object for DE 
+#subcluster_neuronal_alt <- PrepSCTFindMarkers(subcluster_neuronal_alt, assay = "SCT", verbose = TRUE)
+```
+
+And then run the function:
+
+```{r}
+library(metap)
+library(MAST)
+clusters_sub <- levels(Idents(subcluster_neuronal_het))  # e.g., "0", "1", "2", etc.
+
+all_markers_sub <- lapply(clusters_sub, function(clust) {
+  FindConservedMarkers(
+    subcluster_neuronal_het,
+    ident.1 = clust,
+    grouping.var = "timepoint",
+    assay = "SCT",
+    only.pos = TRUE,
+    min.diff.pct = 0.25,
+    min.pct = 0.25,
+    logfc.threshold = 0.25,
+    recorrect_umi = FALSE
+  )
+})
+
+names(all_markers_sub) <- clusters_sub  # name each list element by cluster
+```
+
+Hmm a few don't have anything really about them. Sucks man. 
+
+I don't think there's much use in trying to extract cell types in this data as it kinda is just all smushed together
+
+### Canonical marker assessment
+
+
+### Spare feature plot
+
+```{r}
+subcluster_feature_plot <- subcluster_neuronal_alt |> 
+  FeaturePlot(
+    reduction = "umap",
+    features = "VIE-hap1G00000016230",
+    raster = F,
+    order = T
+  )
+```
+
+VIE-hap1G00000031931 = ETS transcription factor Er81, partial
+
+VIE-hap1G00000013519 = specific to the nk2.2 lineage
+
+VIE-hap1G00000032000 = ZEB2 putative
+
+Notes of platy genes expressed in nk2.2 progenitor population:
+VIE-hap1G00000030629 tumor necrosis factor receptor superfamily member 16 = mostly in progenitors
+VIE-hap1G00000013058 brat = meh expression, mostly in progenitors
+VIE-hap1G00000010650 Ndel1 = in nk2.2 progenitors
+VIE-hap1G00000027462 scribble = meh expression
+VIE-hap1G00000006852 fork head protein, partial (possible foxa2)
+VIE-hap1G00000028228 PRDM3/16 = chromatin accessibility (co-expressed with nk2.2)
+VIE-hap1G00000028450 CHD3/4/5A = more in progenitors (chromatin remodelling)
+VIE-hap1G00000014337 RNA-binding protein SmB = more in progenitors but not really restricted
+VIE-hap1G00000005862 Nk2.2, partial = As expected
+VIE-hap1G00000009152 receptor of activated protein kinase C = nothing really
+VIE-hap1G00000006284 neurexin = more mature neurones
+VIE-hap1G00000016309 neurexin IV = downregulated over time.
+
+Most interesting here are ndel1, brat, prdm3/16

@@ -1,0 +1,21 @@
+--- 
+title: "Regeneration: An integrated dataset"
+author: "Miles Bremridge"
+date: "07/11/25"
+site: bookdown::bookdown_site
+description: |
+  This is the collated single cell analysis of the neurogenesis data
+  Experimental set up: 
+  6 samples at time points 0 hpa, 6hpa 72hpa, 168hpa & 336 hpa
+  aka uninjured tail, 6 hpa segment, 72 hpa segment & regenerate, 72 hpa only regenerate, 168 hpa only regenerate, 336 hpa, only regenerate
+link-citations: yes
+github-repo: https://github.com/mile-brem/scRNA-analysis-downsample
+output: bookdown::gitbook
+doccumentclass: book
+---
+
+# About {-}
+
+This is a analysis of the single cell regeneration including a downsample of the 72 hour timepoint. 
+
+

@@ -1,0 +1,724 @@
+# Clustering (local)
+
+Let's look at clustering our populations. Here, I will take the CCA integrated object from the local integration.
+
+## Basics
+
+Load in the object. I also restate libraries here for QoL.
+
+```{r}
+library(Seurat) #Main processing package
+library(patchwork) #Plotting functionality
+library(DoubletFinder) #Doublets
+library(Matrix)
+library(scales)
+library(cowplot)
+library(RCurl)
+library(pheatmap)
+library(tidyverse) #Load in tidyverse for QoL
+library(janitor) # Cleaning of the data
+library(qs2)
+
+#Setseed for reproducibility
+set.seed(3107)
+```
+
+```{r}
+merged_local_int <- readRDS("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_local_int_umap.RDS")
+#Need to tidy the levels again
+merged_local_int@meta.data <- merged_local_int@meta.data %>% 
+  mutate(timepoint = fct_relevel(timepoint, "0_hpa", "0_hpa_tail", "6_hpa", "12_hpa", "24_hpa", "48_hpa",
+                                 "72_hpa", "72_hpa _only_regen", "168_hpa", "336_hpa"))
+
+#Remove crap columns
+merged_local_int@meta.data <- merged_local_int@meta.data %>%
+  select(-matches("^(DF\\.classifications|pANN)"))
+
+doublets <- readRDS("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/doublets.RDS")
+
+#Append doublets
+merged_local_int <- merged_local_int %>% 
+  AddMetaData(
+  metadata = doublets[Cells(merged_local_int), c("DF.classifications", "pANN")]
+)
+
+#remove doublets
+rm(doublets)
+```
+
+Very good.
+
+## Assessment of PCs
+
+I have discussed what I'm doing in these steps in depth in the previous article. Here, I'll just quickly run through it all.
+
+```{r}
+# Explore heatmap of PCs
+DimHeatmap(merged_local_int, 
+           dims = 1:9, 
+           cells = 500, 
+           balanced = TRUE)
+```
+
+You can see this fuzzies up quickly.
+
+### Elbow plot
+
+```{r}
+# Plot the elbow plot
+ElbowPlot(object = merged_local_int, 
+          ndims = 100)
+```
+
+There is a lot more variation in this dataset compared to the global. Has the global removed more technical.... or biological???
+
+```{r}
+# Determine percent of variation associated with each PC
+pct <- merged_local_int[["pca"]]@stdev / sum(merged_local_int[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5
+co1 <- which(cumu > 75 & pct < 5)[1]
+
+co1
+
+# Determine the difference between variation of PC and subsequent PC
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation
+pcs <- min(co1, co2)
+
+pcs
+```
+
+Similar values here however.
+
+## Clustering
+
+Let's get into the clusters.
+
+### Running the functions
+
+
+```{r}
+# Determine the K-nearest neighbor graph
+merged_local_int <- FindNeighbors(object = merged_local_int, 
+                                dims = 1:60,
+                                k.param = 30,
+                                n.trees = 400)
+```
+
+
+```{r}
+kNN <- pheatmap(merged_local_int@graphs$integrated_nn[1:200, 1:200],
+         col = c("white", "black"), border_color = "grey90", main = "KNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("kNN graph of merged_seurat_rpca")
+```
+
+```{r}
+sNN <- pheatmap(merged_local_int@graphs$integrated_snn[1:200, 1:200],
+         col = colorRampPalette(c("white", 'red', "black"))(100),
+         border_color = "grey90", main = "SNN graph",
+         legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2) +
+  ggtitle("sNN graph of merged_seurat_rpca")
+```
+
+There's a more shared neighbours in this than the global..... maybe
+
+Now we can cluster these
+
+```{r}
+# Determine the clusters for various resolutions                                
+merged_local_int <- FindClusters(object = merged_local_int,
+                               resolution = seq(0.2, 2, by = 0.2),
+                               algorithm = 4)
+
+merged_local_int <- FindClusters(object = merged_local_int,
+                               resolution = c(0.1,0.3),
+                               algorithm = 4)
+
+merged_local_int <- FindClusters(object = merged_local_int,
+                               resolution = 0.4,
+                               algorithm = 4)
+
+```
+
+## QC vis 
+
+```{r}
+library(clustree)
+clustertree <- clustree(merged_local_int, prefix = "integrated_snn_res.")
+```
+
+```{r}
+library(bluster)
+
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(merged_local_int@meta.data), value = TRUE)
+
+# Loop over each resolution column
+silhouette_results <- lapply(resolution_cols, function(col_name) {
+  clust <- merged_local_int@meta.data[[col_name]]
+  emb <- Embeddings(merged_local_int, "pca")
+  sil <- approxSilhouette(emb, clusters = clust)
+  
+  # Extract resolution from column name (e.g., "RNA_snn_res.0.8" -> "0.8")
+  resolution <- sub("integrated_snn_res\\.", "", col_name)
+  
+  data.frame(
+    cell = rownames(emb),
+    resolution = resolution,
+    silhouette_width = sil$width,
+    cluster = as.factor(sil$cluster),
+    row.names = NULL,
+    closest_other = as.factor(sil$other)
+  )
+})
+
+# Combine allresults into one dataframe
+combined_sil_df <- bind_rows(silhouette_results)
+
+# Ensure resolution is treated as an ordered numeric for proper sorting
+combined_sil_df <- combined_sil_df %>%
+  mutate(resolution = factor(resolution, levels = sort(unique(as.numeric(resolution)))))
+
+# Plot: Boxplot per cluster, faceted by resolution
+all_sil <- ggplot(combined_sil_df, aes(x = cluster, y = silhouette_width, fill = cluster)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
+  facet_wrap(~ resolution, scales = "free_x") +
+  labs(
+    title = "Silhouette Width per Cluster across Resolutions",
+    x = "Cluster",
+    y = "Silhouette Width"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+# Compute confusion-like tables per resolution
+confusion_per_res <- combined_sil_df %>%
+  mutate(
+    correct = silhouette_width > 0,
+    assigned = cluster,
+    closest = ifelse(correct, as.character(cluster), as.character(closest_other))
+  ) %>%
+  count(resolution, assigned, closest) %>%
+  group_by(resolution, assigned) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    # Convert to numeric-safe factors per resolution
+    assigned = factor(assigned, levels = sort(unique(as.numeric(as.character(assigned))))),
+    closest = factor(closest, levels = sort(unique(as.numeric(as.character(closest)))))
+  )
+# 
+heatmap_sil <- ggplot(confusion_per_res, aes(x = assigned, y = closest, fill = prop)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "C") +
+  facet_wrap(~ resolution, scales = "free") +
+  #coord_equal() +
+  labs(
+    title = "Cluster Confusion (Assigned vs Closest Other Cluster)",
+    x = "Assigned Cluster",
+    y = "Closest Cluster (if Silhouette < 0)",
+    fill = "Proportion"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+all_sil
+heatmap_sil
+```
+
+## UMAP vis
+
+### UMAP vis
+
+```{r}
+#Get allresolution columns from metadata
+resolution_cols <- grep("^integrated_snn_res\\.", colnames(merged_local_int@meta.data), value = TRUE)
+
+# Loop over resolutions and generate DimPlots
+umap_plots_local <- lapply(resolution_cols, function(col_name) {
+  resolution_label <- sub("integrated_snn_res\\.", "", col_name)
+  
+  p <- DimPlot(
+    merged_local_int,
+    reduction = "umap",
+    group.by = col_name,
+    label = TRUE,
+    label.size = 4,
+    raster = F,
+    pt.size = 0.0001
+  ) +
+    ggtitle(paste("Resolution - integrated", resolution_label)) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    )
+  
+  return(p)
+})
+```
+
+
+```{r}
+umap_plots_local
+```
+
+Extra vis:
+
+```{r}
+umap_0.1 <- DimPlot(merged_local_int,
+                    reduction = "umap",
+                    group.by = "integrated_snn_res.0.1",
+                    label = T,
+                    label.size = 4,
+    raster = F,
+    pt.size = 0.0001)
+
+umap_0.3 <- DimPlot(merged_local_int,
+                    reduction = "umap",
+                    group.by = "integrated_snn_res.0.3",
+                    label = T,
+                    label.size = 4,
+    raster = F,
+    pt.size = 0.0001)
+```
+
+```{r}
+umap_0.1
+umap_0.3
+```
+
+
+I am going to choose a relatively low resolution which captures all major clusters. My thinking is that I will subcluster all of these afterwards. I am going to choose 0.4 as it seems capture everything best. 
+
+### QC of chosen resolution
+
+Let's first do some basic stuff
+
+```{r}
+# Assign identity of clusters
+Idents(object = merged_local_int) <- "integrated_snn_res.0.4"
+
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells <- FetchData(merged_local_int, 
+                     vars = c("integrated_snn_res.0.4", "timepoint")) %>%
+        dplyr::count(integrated_snn_res.0.4, timepoint)
+n_cells
+```
+Plot the cells per cluster
+```{r}
+# Barplot of number of cells per cluster by sample
+cells_per_sample <- ggplot(n_cells, aes(x=integrated_snn_res.0.4, y=n, fill=timepoint)) +
+    geom_bar(position=position_dodge(), stat="identity") +
+  theme_minimal()
+    #geom_text(aes(label=n), vjust = -.2, position=position_dodge(1))
+
+cells_per_sample
+```
+
+```{r}
+# Barplot of proportion of cells in each cluster by sample
+prop_cell_per_cluster <- ggplot(merged_local_int@meta.data) +
+    geom_bar(aes(x=integrated_snn_res.0.4, fill=timepoint), position=position_fill()) +
+  ggtitle("Proportion of cells per cluster by timepoint - resolution 0.4")
+
+prop_cell_per_cluster
+```
+
+Hmm some very interesting proportions there!
+
+Let's look at some scoring metrics from the metadata
+
+```{r}
+# Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nCount_RNA", "nFeature_RNA", "log10GenesPerUMI")
+
+metrics_plot <- FeaturePlot(merged_local_int, 
+            reduction = "umap", 
+            features = metrics,
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            max.cutoff = "q90")
+```
+
+```{r}
+metrics_plot
+```
+
+
+Yippee!! I think we can see those stem cells that alex saw!
+
+Just briefly, here is the UMAP labelled with doublets
+
+```{r}
+umap_db <- DimPlot(merged_local_int,
+                     reduction = "umap",
+                     group.by = "DF.classifications") 
+umap_db
+```
+This is interesting that there are doublets that congregate in some clusters more than others. It is interesting that the shoulder of one of the clusters has a significant labelling of doublets.
+
+We can also plot mitocounts and cell cycling if we get there.
+
+We can also look at what PCs drive which clusters.
+
+```{r}
+## Defining the information in the seurat object of interest
+columns <- c(paste0(Key(merged_local_int[["pca"]]), 1:50),
+             "integrated_snn_res.0.4",
+             paste0(Key(merged_local_int[["umap"]]), 1:2))
+
+columns
+
+# Extracting this data from the seurat object
+pc_data <- FetchData(merged_local_int, 
+                     vars = columns)
+# Adding cluster label to center of cluster on UMAP
+umap_label <- FetchData(merged_local_int, 
+                        vars = c("integrated_snn_res.0.4", "umap_1", "umap_2"))  %>%
+  group_by(integrated_snn_res.0.4) %>%
+  dplyr::summarise(x=mean(umap_1), y=mean(umap_2))
+  
+# Plotting a UMAP plot for each of the PCs
+pc_plots <- map(paste0("PC_", 1:20), function(pc) {
+  ggplot(pc_data, aes(umap_1, umap_2)) +
+    geom_point(aes_string(color = pc), alpha = 0.7) +
+    scale_color_gradient(guide = FALSE, low = "grey90", high = "blue") +
+    geom_text(data = umap_label, aes(label = integrated_snn_res.0.4, x, y)) +
+    ggtitle(pc)
+})
+
+
+pc_plots[[1]]
+pc_plots[[2]]
+```
+
+Hmm very meh.
+
+Next we move to finding the markers and potential cell type identification
+
+## Markers
+
+We have decided on the clustering resolution, but we will look at the markers for these clusters. These are the differentially expressed genes in these clusters against all other clusters.
+
+For this we can use the function FindConservedMarkers(). This internally splits the cells by say sample group or condition, tests all clusters against for that condition. Therefore the marker for a cluster is CONSERVED across conditions. This makes sense potentially in our case. I specify 'timepoint" as our condition.
+
+We first change back to the SCT assay and do some preprocessing
+
+```{r}
+#Set Idents if have not done so
+Idents(merged_local_int) <- "integrated_snn_res.0.4"
+#Set default assay to SCT
+DefaultAssay(merged_local_int) <- "SCT"
+#Make double sure variable features are still here (features variable from all samples)
+VariableFeatures(merged_local_int) <- var_features
+#Prep the SCT object for DE 
+merged_local_int <- PrepSCTFindMarkers(merged_local_int, assay = "SCT", verbose = TRUE)
+```
+
+And then run the function:
+
+```{r}
+library(metap)
+clusters <- levels(Idents(merged_local_int))  # e.g., "0", "1", "2", etc.
+
+all_markers <- lapply(clusters, function(clust) {
+  FindConservedMarkers(
+    merged_local_int,
+    ident.1 = clust,
+    grouping.var = "timepoint",
+    assay = "SCT",
+    only.pos = TRUE,
+    min.diff.pct = 0.25,
+    min.pct = 0.25,
+    logfc.threshold = 1
+  )
+})
+
+names(all_markers) <- clusters  # name each list element by cluster
+
+#save just in case
+#saveRDS(all_markers, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/all_markers_local_int.RDS")
+```
+Now we have our markers, I'm going to look at the top 10 marker genes per cluster
+
+```{r}
+# Combine all marker tables into one dataframe
+all_markers_df <- map2_df(all_markers, names(all_markers), ~
+  .x %>%
+    rownames_to_column("gene") %>%
+    mutate(cluster_id = .y)
+)
+
+# Identify all columns ending with "_avg_log2FC"
+fc_cols <- grep("_avg_log2FC$", colnames(all_markers_df), value = TRUE)
+
+# Compute the average log2FC across all timepoints for each gene. More or less reverts what I did by 
+all_markers_df <- all_markers_df %>%
+  mutate(avg_fc = rowMeans(select(., all_of(fc_cols)), na.rm = TRUE))
+
+# Extract top 10 markers per cluster
+top30 <- all_markers_df %>%
+  group_by(cluster_id) %>%
+  top_n(n = 10, wt = avg_fc) %>%
+  ungroup()
+
+View(top30)
+```
+
+The top30 has the avg fold changes for each condition and then an avg across all conditions. This is best as we get the broad overview with the avg, but when we have a cluster which only has one condition, we can see the fold change specifically for that condition. I should also validate it though with findmarkers but not splitting it by condition.
+
+Let's see if I can visualise these
+
+```{r}
+# remove duplicates
+top30_genes <- unique(top30$gene)
+# DotPlot
+gene_marker_dot_conserved <- DotPlot(merged_local_int, features = top30_genes) + RotatedAxis() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) +
+  ggtitle("Top 30 marker genes per cluster - resolution 0.4")
+```
+
+```{r}
+gene_marker_dot
+```
+```{r}
+DoHeatmap(top30_genes, features = top30$gene) + NoLegend()
+```
+
+As well as the markers that are conserved across all conditions, I want to look for markers that are only enriched in specific timepoints. Here I will take the top three timepoints as this may represent those genes.
+
+```{r}
+top_n_timepoints <- 3  # change this to any number
+
+all_specific_markers_top3 <- lapply(names(all_markers), function(clust) {
+  all_markers[[clust]] %>%
+    rownames_to_column("gene") %>%
+    # pivot longer for logFC
+    pivot_longer(
+      cols = ends_with("_avg_log2FC"),
+      names_to = "timepoint",
+      names_pattern = "(.*)_avg_log2FC",
+      values_to = "logFC"
+    ) %>%
+    # pivot longer for pct.1 to match timepoints
+    pivot_longer(
+      cols = ends_with("_pct.1"),
+      names_to = "timepoint_pct",
+      names_pattern = "(.*)_pct.1",
+      values_to = "pct"
+    ) %>%
+    filter(timepoint == timepoint_pct) %>%  # align logFC with pct
+    group_by(gene) %>%
+    slice_max(order_by = logFC, n = top_n_timepoints, with_ties = FALSE) %>%  # top N timepoints
+    filter(logFC > 0.25) %>%  # optional threshold
+    mutate(cluster = clust) %>%
+    ungroup()
+})
+
+all_specific_markers_top3_df <- bind_rows(all_specific_markers_top3)
+```
+
+```{r}
+specific_genes <- unique(all_specific_markers_top3_df$gene)
+
+# Create a DotPlot
+gene_marker_dot <- DotPlot(
+  merged_local_int,
+  features = specific_genes,
+  group.by = "integrated_snn_res.0.4",
+  dot.scale = 4,
+) + 
+  RotatedAxis() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) +
+  ggtitle("Condition-specific markers by cluster")
+
+tp <- unique(merged_local_int$timepoint)
+length(tp)
+
+n_tp <- length(tp)
+
+my_time_colors <- colorRampPalette(RColorBrewer::brewer.pal(12, "Paired"))(n_tp)
+
+# Create a DotPlot by time
+gene_marker_dot_time <- DotPlot(
+  merged_local_int,
+  features = specific_genes,
+  group.by = "integrated_snn_res.0.4",
+  split.by = "timepoint",
+  dot.scale = 4,
+  cols = my_time_colors
+) + 
+  RotatedAxis() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6)) +
+  ggtitle("Condition-specific markers by cluster")
+```
+
+```{r}
+#Now trying to create a facet
+# If you want to facet by timepoint instead of using group.by, you can extract the data:
+dot_data <- gene_marker_dot$data
+
+dot_cell_metadata <- merged_local_int@meta.data %>%
+  select(timepoint, integrated_snn_res.0.4) %>%
+  distinct()
+
+dot_time_data <- dot_data %>%
+  left_join(dot_cell_metadata, by = c("id" = "integrated_snn_res.0.4"))
+
+dot_time_data$pct.exp.scaled <- sqrt(dot_time_data$pct.exp / max(dot_time_data$pct.exp, na.rm = TRUE))
+```
+
+```{r}
+dot_time_data$features.plot <- factor(dot_time_data$features.plot,
+                                      levels = rev(unique(dot_time_data$features.plot)))
+
+# Trying to create the dot plot
+dot_faceted <- ggplot(dot_time_data, aes(x = id, y = features.plot)) +
+  geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+  scale_size(range = c(0, 5)) +  # matches Seurat dot size range
+  scale_color_gradient(low = "#D3D3D3", high = "#0343DF") +
+  facet_wrap(~ timepoint, ncol = 3) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 10)
+  ) +
+  labs(
+    x = "Cluster",
+    y = "Gene",
+    title = "Timepoint-specific marker genes (faceted by timepoint)"
+  )
+```
+
+Okay looks fucked by maybe if I save it as pdf it'll be better
+
+```{r}
+options(repr.plot.height = 25, repr.plot.width = 10)
+dot_faceted
+```
+Well looks alittle. fucked still.
+
+I'm going to do this one more way and then move on.
+
+```{r}
+get_specific_markers <- function(marker_list,
+                                 pct_diff_cutoff = 0.20,
+                                 fc_diff_cutoff = 0.25,
+                                 min_fc = 0.25) {
+  
+  map2_df(marker_list, names(marker_list), function(df, clust) {
+    
+    df2 <- df %>% rownames_to_column("gene")
+    
+    # Identify columns by suffix
+    fc_cols  <- grep("_avg_log2FC$", colnames(df2), value = TRUE)
+    pct_cols <- grep("_pct.1$",      colnames(df2), value = TRUE)
+    
+    # Extract timepoint from prefix (everything before the last "_")
+    extract_tp <- function(x) sub("^(.*)_.*$", "\\1", x)
+    
+    # FC long format
+    fc_long <- df2 %>%
+      select(gene, all_of(fc_cols)) %>%
+      pivot_longer(
+        cols = -gene,
+        names_to = "fc_col",
+        values_to = "logFC"
+      ) %>%
+      mutate(timepoint = extract_tp(fc_col)) %>%
+      select(-fc_col)
+    
+    # pct long format
+    pct_long <- df2 %>%
+      select(gene, all_of(pct_cols)) %>%
+      pivot_longer(
+        cols = -gene,
+        names_to = "pct_col",
+        values_to = "pct"
+      ) %>%
+      mutate(timepoint = extract_tp(pct_col)) %>%
+      select(-pct_col)
+    
+    # Join FC + pct by gene and timepoint
+    long <- fc_long %>%
+      inner_join(pct_long, by = c("gene", "timepoint")) %>%
+      mutate(cluster = clust)
+    
+    # Compute specificity
+    long %>%
+      group_by(gene, cluster) %>%
+      mutate(
+        max_other_pct = max(pct[timepoint != cur_group()$timepoint], na.rm = TRUE),
+        pct_diff = pct - max_other_pct,
+        
+        max_other_fc = max(logFC[timepoint != cur_group()$timepoint], na.rm = TRUE),
+        fc_diff = logFC - max_other_fc
+      ) %>%
+      ungroup() %>%
+      filter(
+        logFC > min_fc,
+        pct_diff > pct_diff_cutoff,
+        fc_diff > fc_diff_cutoff
+      )
+  })
+}
+
+# Run it
+specific_markers <- get_specific_markers(all_markers)
+
+head(specific_markers)
+
+```
+
+Yeah moving on. Tbh they're expressed in all.
+
+```{r}
+umap_0.4 <- DimPlot(subcluster_neuronal,
+        reduction = "umap",
+        group.by = "timepoint",
+        raster = F,
+        shuffle= T,
+        stroke.size = 0.5)
+```
+
+
+```{r}
+pdf(file = "~/desktop/umap_local_int_res0-4.pdf",
+      height = 8,
+      width = 12)
+print(umap_0.4)
+dev.off()
+```
+
+```{r}
+umap_timme_splot <- DimPlot(merged_local_int,
+        reduction = "umap",
+        split.by = "timepoint",
+        raster = F,
+        pt.size = 0.01,
+        stroke.size = 0.5)
+```
+
+```{r}
+pdf(file = "~/desktop/umap_time_split.pdf",
+      height = 8,
+      width = 48)
+print(umap_timme_splot)
+dev.off()
+```

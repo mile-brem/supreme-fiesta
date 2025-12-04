@@ -1,0 +1,429 @@
+# Creating the seurat object and quality control
+
+Here, we will read in the outputs from cellranger count, and create the seurat object including all cells from the samples.
+
+Further to this, we will investigate the quality control and filter samples that do not match critera.
+
+## Reading in the 10X cellranger outputs and creating seurat objects
+
+Firstly, we need to load in the packages needed for this analysis
+
+``` {r, echo = FALSE, message = FALSE}
+library(Seurat) #Main processing package
+library(patchwork) #Plotting functionality
+library(DoubletFinder) #Doublets
+library(Matrix)
+library(scales)
+library(cowplot)
+library(RCurl)
+library(SoupX) # Might test this out later
+
+#Setseed for reproducibility
+set.seed(3107)
+```
+
+Then we will load in the data. The metadata and directories were loaded in in the previous file.
+
+```{r, warning=FALSE}
+# Meta data read in in previous sequence as well as the base directories
+# Create empty list
+seurat_list <- list()
+
+# Loop through each sample
+for (i in 1:nrow(meta)) {
+  ident <- meta$new_ident[i]
+  orig_ident <- meta$original_ident[i]
+  timepoint <- meta$timepoint[i]
+  replicate <- meta$replicate[i]
+  group <- meta$group[i]
+  chemistry <- meta$chemistry[i]
+  
+  # Determine base directory dynamically
+  base_dir <- if (meta$sample[i] <= 208436) path_A_B else path_C
+  data_dir <- file.path(base_dir, orig_ident, "filtered_feature_bc_matrix")
+  
+  # Read 10X data if folder exists
+  if (dir.exists(data_dir)) {
+    counts <- Read10X(data.dir = data_dir)
+    
+    sc_obj <- CreateSeuratObject(counts = counts, project = ident)
+    
+    # Add metadata
+    sc_obj$ident <- ident
+    sc_obj$timepoint <- timepoint
+    sc_obj$replicate <- replicate
+    sc_obj$group <- group
+    sc_obj$chemistry <- chemistry
+    
+    # Store in list
+    seurat_list[[ident]] <- sc_obj
+  } else {
+    warning(paste("Folder does not exist:", data_dir))
+  }
+}
+
+# Check the names
+names(seurat_list)
+```
+
+Note: I've turned off the warnings, but seurat changes the "_" in VIE_hap1...... to "-" in VIE-hap1...... Doesn't really matter but just to keep in mind when going back to plotting the genes.
+
+In Seurat, we can also merge all objects and it will keep the expression information split.
+
+```{r, echo=FALSE, message=FALSE}
+all_data <- merge(
+  x = seurat_list[[1]],
+  y = seurat_list[-1],
+  add.cell.ids = names(seurat_list),
+  project = "regeneration"
+)
+
+# Concatenate the matricies of samples
+all_data <- JoinLayers(all_data)
+
+head(all_data@meta.data)
+
+# Save the object, already done so, but left for the report.
+#saveRDS(all_data, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/01_seurat/all_data.RDS")
+```
+
+Great, we have our seurat objects created and overall objects created.
+
+## Metric generation
+
+We can now proceed to some potential quality control.
+
+First, let's add a "novelty score".
+
+To explain, the novelty score is the ratio of genes to umis. We expect genes < umis so this will be less than one. A higher value indicates a transcriptomically diverse cell whereas a lower value indicates a cell that is dominated by a few highly expressed genes, or cells like red blood cells. However, there are other technical reasons for this. 1. low sequencing depth, 2. Disrupted/damaged cells. Both of these we may want to avoid as they skew the results.
+
+```{r}
+# Add number of genes per UMI for each cell to metadata
+all_data$log10GenesPerUMI <- log10(all_data$nFeature_RNA) / log10(all_data$nCount_RNA)
+
+#When I label the mitochondrial genes, I will add the metric here
+#all_data$mitoRatio <- PercentageFeatureSet(object = all_data, pattern = "^MT-")
+#all_data$mitoRatio <- all_data@meta.data$mitoRatio / 100
+
+#Also just adding cellIDs to metadata
+all_data@meta.data$cells <- rownames(all_data@meta.data)
+```
+
+We can now assess these metrics to see how they reflect our dataset and perform quality control.
+
+### Mitochondrial ratio
+
+I assessed all genes related to mitochondrial GO terms to get an idea of whether they're in here.
+
+```{r}
+mito_genes <- read_csv("/Volumes/MILES_SDD/00_data/00.01_genomes/mitochondrion_genes.csv")
+mito_genes <- mito_genes |> 
+  mutate(SYMBOL = gsub("_", "-", SYMBOL))
+
+# Suppose mito_genes has SYMBOL column with your gene IDs
+mito_genes <- mito_genes$SYMBOL
+```
+Now calculate the mito genes that actually appear in my data
+
+```{r}
+mito_genes_in_data <- mito_genes[mito_genes %in% rownames(all_data)]
+```
+
+All appear in the data, great
+
+```{r}
+all_data$mitoRatio <- PercentageFeatureSet(object = all_data, features = mito_genes_in_data)
+all_data$mitoRatio <- all_data@meta.data$mitoRatio / 100
+```
+
+That was some time coming.
+
+```{r}
+# Visualize the distribution of mitochondrial gene expression detected per cell
+nmitoRatio <- all_data@meta.data %>% 
+  	ggplot(aes(color=ident, x=mitoRatio, fill=ident)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 0.2)
+```
+
+
+### Cell Counts
+
+First, we will have a quick look at cell counts. Leonie informed me that ~20,000 cells were loaded.
+
+```{r}
+nCells <- all_data@meta.data %>% 
+  ggplot(aes(x = ident, fill = ident)) +
+  geom_bar() +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  ggtitle("Number of cells detected per sample - Pre-filter") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1))
+```
+
+So, everything looks alright apart from the one sample which has a redonkulous amount of cells. After discussion with Leonie, she informed me this is likely real and not junk cells due to confusion with a technician.
+
+Could cause problems later on. It would affect absolute cell counts, but more importantly, these will have a much lower sequencing depth than the other samples sequenced at the same time. This could lead to genes not being picked up.
+
+We'll see if there's anything that affects this later on.
+
+### UMI counts (transcripts) per cell
+
+```{r}
+# Visualize the number UMIs/transcripts per cell
+nUMI <- all_data@meta.data %>% 
+  ggplot(aes(color=ident, x=nCount_RNA, fill= ident)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10() + 
+  theme_minimal() +
+  ylab("Cell density") +
+  xlab("number of UMIs") +
+  ggtitle("Number of UMIs detected in cells per sample - Pre-filter") +
+  geom_vline(xintercept = 500)
+```
+
+Okay, they have a nice single peak for most cells, but there is some peaks within the peaks. Could represent different populations of cells.
+
+### Genes detected per cell
+
+```{r}
+# Visualize the distribution of genes detected per cell via histogram
+nGeneperCell <- all_data@meta.data %>% 
+  ggplot(aes(color=ident, x=nFeature_RNA, fill= ident)) + 
+  geom_density(alpha = 0.2) + 
+  theme_minimal() +
+  scale_x_log10() + 
+  ylab("Cell density") +
+  xlab("Number of genes") +
+  ggtitle("Number of Genes detected in cells per sample - Pre-filter") +
+  geom_vline(xintercept = 300)
+```
+
+Here most cells are in one single large peak for each sample. In 72hours post amputation, there may be a bimodal distribution of cells. This could represent doublets to the right or biologically meaningful distinct cell types.
+
+### Complexity
+
+Above I calculated a "novelty score". This evaluates how complex the RNA species are in each cell. aka the ratio of genes over UMIs. If there are high UMIs and low number of genes detected, the could be a low number of genes that were sequenced over and over again. A "good" measure is 0.8 (subjective, but reasonable)
+
+```{r}
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI (novelty score)
+novelty <- all_data@meta.data %>%
+  ggplot(aes(x=log10GenesPerUMI, color = ident, fill=ident)) +
+  geom_density(alpha = 0.2) +
+  theme_classic() +
+  ggtitle("Complexity cells per sample - Pre-filter") +
+  geom_vline(xintercept = 0.8)
+```
+
+### Mitochondrial counts
+
+Another way to assess quality is to investigate the percentage of mitochondrial genes in a cell. The thinking is that if a cell membrane is disrupted, cytoplasmic RNA can easily leak into the environment, but mitochondrial RNA (presumably containedd within the mitochondria) cannot. 
+
+### Joint filtering effects 
+
+These metrics should never be considered in isolation to determine cut-offs as they could miss something that is biologically meaningful.
+
+A general rule of thumb when performing QC is to set thresholds for individual metrics to be as permissive as possible, and always consider the joint effects.
+
+Let's plot number of genes versus the number of UMIs coloured by the fraction of mitochondiral reads (when I have them).
+
+```{r}
+jointeffects <- all_data@meta.data %>% 
+  ggplot(aes(x=nCount_RNA, y=nFeature_RNA, colour = mitoRatio)) + 
+  geom_point() + 
+	scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm, aes(group=1), color="red") +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_minimal() +
+  geom_vline(xintercept = 500) +
+  geom_hline(yintercept = 200) +
+  facet_wrap(~ident) +
+  ggtitle("Joint effects - Pre-filter") 
+```
+
+Assessing this, we can see that most cells are pretty high quality. In some cells, there are some that have a high proportion of UMIs and low proportion of genes. These could be low quality.
+
+I've put my comments above, but here are the plots for the report. 
+
+```{r}
+jointeffects
+nCells
+nUMI
+novelty
+nGeneperCell
+nmitoRatio
+```
+
+## Filtering based on metrics
+
+Here we filter the samples based on outliers and set metrics.
+
+This seems to be mostly subjective in the literature and there is no one size fits all.
+
+Here we filter cells that have lower than 500 UMIs (which most do have) and cells that have less than 200 genes (again most do have this). I will also filter cells that are not more than 0.75 on the novelty score. A small amount of cells. Overall, I'm trying to be lenient.
+
+Pretty much all cells have a low percentage of mitochondrial reads so I'm confident that no cells are fucked.
+
+```{r}
+#List of sample objects and their thresholds
+filtered_seurat <- subset(x = all_data, 
+                         subset= (nCount_RNA >= 500) & 
+                           (nFeature_RNA >= 200) & 
+                           (log10GenesPerUMI > 0.75))
+
+```
+
+Okay, we have now filtered the samples. Let's do some plotting again to see how this looks.
+
+### Cell Counts
+
+```{r}
+nCells_filtered <- filtered_seurat@meta.data %>% 
+  ggplot(aes(x = ident, fill = ident)) +
+  geom_bar() +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  ggtitle("Number of cells detected per sample - Filtered") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust =1))
+```
+
+Again, we can just see that one pop up.
+
+### UMI counts (transcripts) per cell
+
+```{r}
+# Visualize the number UMIs/transcripts per cell
+nUMI_filtered <- filtered_seurat@meta.data %>% 
+  ggplot(aes(color=ident, x=nCount_RNA, fill= ident)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10() + 
+  theme_minimal() +
+  ylab("Cell density") +
+  xlab("number of UMIs") +
+  ggtitle("Number of UMIs detected in cells per sample - Filtered") +
+  geom_vline(xintercept = 500)
+```
+
+### Genes detected per cell
+
+```{r}
+# Visualize the distribution of genes detected per cell via histogram
+nGeneperCell_filtered <- filtered_seurat@meta.data %>% 
+  ggplot(aes(color=ident, x=nFeature_RNA, fill= ident)) + 
+  geom_density(alpha = 0.2) + 
+  theme_minimal() +
+  scale_x_log10() + 
+  ylab("Cell density") +
+  xlab("Number of genes") +
+  ggtitle("Number of Genes detected in cells per sample - Filtered") +
+  geom_vline(xintercept = 300)
+```
+
+
+### Complexity
+
+
+```{r}
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI (novelty score)
+novelty_filtered <- filtered_seurat@meta.data %>%
+  ggplot(aes(x=log10GenesPerUMI, color = ident, fill=ident)) +
+  geom_density(alpha = 0.2) +
+  theme_classic() +
+  ggtitle("Complexity cells per sample - Filtered") +
+  geom_vline(xintercept = 0.8)
+```
+
+
+### Joint filtering effects 
+
+```{r}
+jointeffects_filtered <- filtered_seurat@meta.data %>% 
+  ggplot(aes(x=nCount_RNA, y=nFeature_RNA)) + 
+  geom_point() + 
+	scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm) +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_minimal() +
+  geom_vline(xintercept = 500) +
+  geom_hline(yintercept = 250) +
+  facet_wrap(~ident) +
+  ggtitle("Joint effects - Filtered") 
+```
+
+Let's have a look.
+
+```{r}
+jointeffects_filtered
+nCells_filtered
+nUMI_filtered
+novelty_filtered
+nGeneperCell_filtered
+```
+
+We can see the data is cleaned up quite a lot and hopefully a lot of low quality cells have been removed.
+
+Perhaps could change downstream analysis, but if low quality cells significantly affect the analysis then there is an issue with the findings. I don't think low quality cells should drive this however.
+
+### Gene-level filtering
+
+Now we can also filter by the genes. The intention here is to remove all genes that have 0 expression or are not expressed in the vast majority of cells. Therefore, these genes will not have an effect on any analysis and perhaps significantly decrease computation time.
+
+```{r}
+# Extract counts
+counts <- GetAssayData(object = filtered_seurat, layer = "counts")
+
+# Output a logical matrix specifying for each gene on whether or not there are more than zero counts per cell
+nonzero <- counts > 0
+
+# Sums all TRUE values and returns TRUE if more than 10 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+
+# Only keeping those genes expressed in more than 10 cells
+filtered_counts <- counts[keep_genes, ]
+
+# Reassign to filtered Seurat object
+filtered_gene_seurat <- CreateSeuratObject(filtered_counts, meta.data = filtered_seurat@meta.data)
+
+#Compare filtered objects
+total_before <- nrow(filtered_seurat)
+total_after  <- nrow(filtered_gene_seurat)
+removed <- total_before - total_after
+
+message("Before filtering: ", total_before,
+        " | After filtering: ", total_after,
+        " | Genes removed: ", removed)
+
+```
+
+Above I removed all genes that are not expressed or only expressed in 10 cells or less. It looks like 6408 genes can be removed from the dataset as they are not really expressed/are superfluous.
+
+```{r}
+#Save the filtered objects
+#saveRDS(all_data, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/all_seurat.RDS")
+#saveRDS(filtered_seurat, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/filtered_seurat.RDS")
+#saveRDS(filtered_gene_seurat, file = "/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/filtered_gene_seurat.RDS")
+```
+
+All save all the plots to a pdf
+
+```{r}
+pdf(file = "plots/QC_metrics&filtered.pdf")
+print(nCells)
+print(nCells_filtered)
+print(nUMI)
+print(nUMI_filtered)
+print(nGeneperCell)
+print(nGeneperCell_filtered)
+print(novelty)
+print(novelty_filtered)
+print(jointeffects)
+print(jointeffects_filtered)
+dev.off()
+```
+
+
+

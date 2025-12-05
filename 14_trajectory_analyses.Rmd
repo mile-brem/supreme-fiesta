@@ -4,8 +4,9 @@ I now have two objects at the current moment. merged_local_int which is now fini
 
 ```{r}
 library(qs2)
-merged_local_int <- qs_read("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/merged_local_int.qs2")
-subcluster_neuronal_alt <- qs_read("/Volumes/MILES_SDD/00_data/00.02_rough_before_transfer/251022_regenerate_integration/02_downsample/subcluster_neuronal_alt.qs2")
+library(scCustomize)
+merged_local_int <- qs_read("/lisc/data/work/tessmar_raible/regeneration/_2025_neurogenesis/251022_regeneration_integration/03_downsample_latest/merged_local_int.qs2")
+subcluster_neuronal_alt <- qs_read("/lisc/data/work/tessmar_raible/regeneration/_2025_neurogenesis/251022_regeneration_integration/03_downsample_latest/subcluster_neuronal_alt.qs2")
 ```
 
 
@@ -19,9 +20,30 @@ The first thing I want to try out is RNA velocity.
 
 After assessing a few, I am going to try out both scVelo and cell2fate. I am going to try cell2fate first as it should be better and then validate it maybe using scVelo
 
-The first thing for RNA velocity however is I need to calcualte the spliced and unspliced RNA. This is done on the command line and then as well both of these tools have been generated in python so we're going to have fun using them here. There are no tutorials for cell2fate in R/reticulate so I'm going to have to have to do that from scratch myself.
+The first thing for RNA velocity however is I need to calcualte the spliced and unspliced RNA. This is done on the command line and so fuck doing this in R again and we'll move to python.
+
+Let's convert this do anndata gain. Before that though I need to add the velocyto output.
+
+```{r}
+
+```
+
+
+
+```{r}
+merged_local_int_ann <- as.anndata(
+    x = merged_local_int,
+    file_path = "/lisc/data/work/tessmar_raible/regeneration/_2025_neurogenesis/251022_regeneration_integration/03_downsample_latest/",
+    file_name = ("merged_local_int_ann.h5ad"),
+    main_layer = "data",
+    other_layers = NULL
+  )
+```
+
 
 ### Cell2fate
+
+See pyhton notebooks.
 
 ## Trajectory analysis
 

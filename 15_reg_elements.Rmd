@@ -1,0 +1,5 @@
+# Regulatory elements
+
+As part of this, we can also have a look at what genes may express together and be part of a regulatory network. 
+
+We can use a 
